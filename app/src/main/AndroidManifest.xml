@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+        DELIVERY PERMISSIONS
+        ====================
+        On Android, unlike iOS, an alarm is not guaranteed. These permissions buy
+        back as much of that guarantee as the platform allows.
+    -->
+
+    <!-- API 31-32: user-revocable, must be requested via Settings intent. -->
+    <uses-permission
+        android:name="android.permission.SCHEDULE_EXACT_ALARM"
+        android:maxSdkVersion="32" />
+
+    <!--
+        API 33+: normal permission, granted at install, cannot be revoked.
+        Google Play restricts this to apps whose core function is an alarm
+        clock or calendar. This app qualifies; a Play listing must declare it.
+    -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+
+    <!-- Re-arm the chain after a reboot, which otherwise wipes every pending alarm. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- Ringing surface. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
+
+    <!--
+        The ringing service plays audio, so mediaPlayback is the honest type.
+        Rejected alternatives:
+          shortService   - hard 3 minute timeout, then ANR. A mission can
+                           legitimately take longer than that.
+          systemExempted - reserved for system/privileged roles; throws
+                           InvalidForegroundServiceTypeException for normal apps.
+          specialUse     - requires a per-app Google Play review with no
+                           guarantee of approval.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+
+    <!-- Offered to the user from the Reliability screen, never demanded. -->
+    <uses-permission
+        android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
+        tools:ignore="BatteryLife" />
+
+    <!-- Mission hardware. All optional: a missing sensor takes the fallback path. -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.stepcounter" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+
+    <application
+        android:name=".BetterAlarmApplication"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.BetterAlarm">
+
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.BetterAlarm">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Lets the app be offered as the device alarm-clock handler. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SHOW_ALARMS" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            The ringing surface.
+
+            excludeFromRecents + taskAffinity="" put this in its own task that
+            never appears in the recents list, so it cannot be swiped away.
+            showWhenLocked + turnScreenOn wake the device and draw over the
+            keyguard without requiring the user to unlock first.
+            The configChanges list keeps a rotation from restarting a mission
+            that is halfway done.
+        -->
+        <activity
+            android:name=".ui.ringing.RingingActivity"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:showOnLockScreen="true"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|density|fontScale"
+            android:theme="@style/Theme.BetterAlarm.Ringing" />
+
+        <service
+            android:name=".alarm.RingingService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback"
+            android:stopWithTask="false" />
+
+        <!-- Fires on the AlarmManager callback and hands off to RingingService. -->
+        <receiver
+            android:name=".alarm.AlarmReceiver"
+            android:exported="false"
+            android:directBootAware="true" />
+
+        <!-- Notification action buttons (snooze / open). -->
+        <receiver
+            android:name=".alarm.AlarmActionReceiver"
+            android:exported="false" />
+
+        <!--
+            The single most important component in the app.
+
+            A reboot clears every pending AlarmManager alarm, and a force-stop
+            does the same. This receiver is the only thing that puts them back.
+            LOCKED_BOOT_COMPLETED fires before the user unlocks after a reboot,
+            so alarms are restored even on a device that is rebooted overnight
+            and never unlocked.
+        -->
+        <receiver
+            android:name=".alarm.BootReceiver"
+            android:exported="true"
+            android:directBootAware="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.DATE_CHANGED" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

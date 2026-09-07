@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Better Alarm</string>
+    <string name="channel_ringing_name">Ringing alarms</string>
+    <string name="channel_ringing_desc">The full-screen alert shown when an alarm goes off. Disabling this stops alarms from waking you.</string>
+    <string name="channel_upcoming_name">Upcoming alarms</string>
+    <string name="channel_upcoming_desc">A quiet reminder of the next alarm.</string>
+    <string name="channel_warnings_name">Reliability warnings</string>
+    <string name="channel_warnings_desc">Tells you when the system has put your alarms at risk.</string>
+</resources>
