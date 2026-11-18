@@ -182,18 +182,33 @@ object MissionLibrary {
      * A mission that cannot run must never mean an alarm that cannot be stopped,
      * which is why every chain terminates in [MissionType.MATH].
      */
-    fun resolve(config: MissionConfig, available: List<MissionType>): MissionConfig {
-        if (config.type == MissionType.COMBINATION) {
-            return config.copy(children = config.children.map { resolve(it, available) })
+    fun resolve(
+        config: MissionConfig,
+        available: List<MissionType>,
+        targetAvailable: (MissionConfig) -> Boolean = { true },
+        fallback: MissionType? = null
+    ): MissionConfig {
+        val normalized = config.normalized()
+        if (normalized.type == MissionType.COMBINATION) {
+            return normalized.copy(children = normalized.children.map {
+                resolve(it, available, targetAvailable, fallback)
+            })
         }
-        if (config.type in available) return config
+        if (normalized.type in available && targetAvailable(normalized)) return normalized
 
-        val replacement = config.type.fallbackChain.firstOrNull { it in available }
+        val safe = available.filter {
+            it != MissionType.NONE && it != MissionType.COMBINATION &&
+                it != MissionType.PHOTO && it != MissionType.QR
+        }
+        val replacement = fallback?.takeIf { it in safe }
+            ?: normalized.type.fallbackChain.firstOrNull { it in safe }
             ?: MissionType.MATH
 
-        return config.copy(
+        return normalized.copy(
             type = replacement,
-            targetCount = MissionConfig.defaultTargetCount(replacement)
+            targetCount = MissionConfig.defaultTargetCount(replacement),
+            referenceAssetIds = emptyList(),
+            children = emptyList()
         )
     }
 }

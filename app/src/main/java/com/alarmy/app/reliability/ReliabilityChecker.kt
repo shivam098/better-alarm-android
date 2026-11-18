@@ -230,7 +230,7 @@ class ReliabilityChecker(
         val manager = NotificationManagerCompat.from(context)
         if (!manager.areNotificationsEnabled()) return
         val first = failures.first()
-        runCatching {
+        try {
             manager.notify(
                 AlarmNotifications.NOTIFICATION_WARNING,
                 AlarmNotifications.warningNotification(
@@ -239,6 +239,8 @@ class ReliabilityChecker(
                     "${first.title}: ${first.consequence}"
                 )
             )
+        } catch (e: SecurityException) {
+            android.util.Log.w("ReliabilityChecker", "Notification permission changed while posting warning", e)
         }
     }
 }

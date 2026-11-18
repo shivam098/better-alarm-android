@@ -10,6 +10,11 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class SnoozePolicyTest {
+    @Test
+    fun `fixed snoozes never shorten`() {
+        val policy = SnoozePolicy(baseMinutes = 9, escalating = false)
+        assertEquals(listOf(9, 9, 9, 9), (0..3).map(policy::durationMinutes))
+    }
 
     @Test
     fun `snooze durations shorten on each use`() {
@@ -45,6 +50,40 @@ class SnoozePolicyTest {
 }
 
 class AlarmStateMachineTest {
+    @Test
+    fun `mission snooze cannot be granted until a real completion`() {
+        val m = AlarmStateMachine(SnoozePolicy(requiresMission = true))
+        val ringing = m.reduce(AlarmState(), AlarmEvent.Fired("key")).state
+        val requested = m.reduce(ringing, AlarmEvent.SnoozeRequested)
+        assertTrue(requested.state.snoozePendingMission)
+        assertFalse(requested.effects.any { it is AlarmEffect.ScheduleSnooze })
+        val failed = m.reduce(requested.state, AlarmEvent.MissionFailed)
+        assertTrue(failed.state.snoozePendingMission)
+        val completed = m.reduce(failed.state, AlarmEvent.MissionCompleted)
+        assertEquals(AlarmPhase.SNOOZED, completed.state.phase)
+        assertEquals(1, completed.state.snoozeCount)
+        assertTrue(completed.effects.contains(AlarmEffect.RecordOutcome(AlarmOutcome.SNOOZED)))
+        assertFalse(completed.effects.contains(AlarmEffect.RecordOutcome(AlarmOutcome.COMPLETED)))
+    }
+
+    @Test
+    fun `restored snooze count enforces the limit after another firing`() {
+        val m = AlarmStateMachine(SnoozePolicy(maxSnoozes = 2))
+        val fired = m.reduce(AlarmState(snoozeCount = 2), AlarmEvent.Fired("key#snooze2"))
+        val rejected = m.reduce(fired.state, AlarmEvent.SnoozeRequested)
+        assertEquals(AlarmPhase.RINGING, rejected.state.phase)
+        assertFalse(rejected.effects.any { it is AlarmEffect.ScheduleSnooze })
+    }
+
+    @Test
+    fun `snoozing pauses the watchdog chain before scheduling durable snooze`() {
+        val m = AlarmStateMachine()
+        val result = m.reduce(AlarmState(phase = AlarmPhase.RINGING), AlarmEvent.SnoozeRequested)
+        assertTrue(result.effects.indexOf(AlarmEffect.CancelGuardChain) <
+            result.effects.indexOfFirst { it is AlarmEffect.ScheduleSnooze })
+        assertTrue(m.reduce(result.state, AlarmEvent.SnoozeRequested).effects.isEmpty())
+        assertTrue(m.reduce(result.state, AlarmEvent.MissionCompleted).effects.isEmpty())
+    }
 
     private val key = "alarm-1-20260511-0700"
     private val mission = MissionConfig(MissionType.MATH, MissionDifficulty.MEDIUM, 3)

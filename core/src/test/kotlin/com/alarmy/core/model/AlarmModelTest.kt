@@ -134,6 +134,23 @@ class AlarmModelTest {
 }
 
 class MissionConfigTest {
+    @Test
+    fun `combination defaults and resized children match the saved count`() {
+        val draft = MissionConfig(type = MissionType.COMBINATION, targetCount = 3)
+        assertEquals(3, draft.normalized().children.size)
+        val smaller = draft.normalized().copy(targetCount = 2).normalized()
+        assertEquals(2, smaller.children.size)
+        assertTrue(smaller.children.all { it.type == MissionType.MATH })
+    }
+
+    @Test
+    fun `legacy alarm data retains safe defaults for added settings`() {
+        val alarm = Json.decodeFromString<Alarm>("""{"id":"legacy","hour":6,"mission":{"type":"TYPING"}}""")
+        assertFalse(alarm.wakeCheckEnabled)
+        assertFalse(alarm.speakLabel)
+        assertEquals(30, alarm.rampSeconds)
+        assertEquals("", alarm.mission.customPhrase)
+    }
 
     @Test
     fun `escalation raises difficulty one step and stops at the top`() {

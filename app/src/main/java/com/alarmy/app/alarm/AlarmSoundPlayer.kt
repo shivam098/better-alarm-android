@@ -16,6 +16,12 @@ import android.os.VibratorManager
 import android.provider.Settings
 import android.util.Log
 import com.alarmy.core.model.SoundLibrary
+import com.alarmy.core.model.Alarm
+import com.alarmy.core.mission.AlarmToneSynthesizer
+import android.media.ToneGenerator
+import android.speech.tts.TextToSpeech
+import java.io.File
+import java.util.Locale
 import kotlin.math.max
 import kotlin.math.min
 
@@ -31,12 +37,9 @@ import kotlin.math.min
  *
  * ## Bundled sounds
  *
- * This repository ships **no audio files**. Distributing alarm tones means
- * distributing someone's copyright, and generating them would produce something
- * nobody wants to wake up to. [SoundLibrary] entries are looked up in `res/raw`
- * by name, and any that are missing fall back to the device's own default alarm
- * ringtone, which every Android device has. Dropping `radar.ogg` and friends
- * into `app/src/main/res/raw/` is all that is needed to enable them.
+ * [SoundLibrary] entries are original PCM tones generated locally. A configured
+ * backup, system ringtone, then emergency alarm-stream beeps provide recovery
+ * if a player cannot open its source.
  *
  * ## Volume defence
  *
@@ -59,42 +62,65 @@ class AlarmSoundPlayer(private val context: Context) {
     private var targetVolume: Float = 1f
     private var currentVolume: Float = 1f
     private var volumeFloor: Int = 0
+    private var rampSteps = 30
+    private var speech: TextToSpeech? = null
+    private var emergencyTone: ToneGenerator? = null
+    private var emergencyLoop: Runnable? = null
 
-    fun start(soundId: String, volume: Double, gentleRamp: Boolean, vibrate: Boolean, escalated: Boolean) {
+    fun start(alarm: Alarm, escalated: Boolean) {
         stop()
 
-        val uri = resolveSound(soundId)
-        targetVolume = volume.coerceIn(0.05, 1.0).toFloat()
+        targetVolume = alarm.volume.coerceIn(0.05, 1.0).toFloat()
+        rampSteps = alarm.rampSeconds.coerceIn(5, 120)
 
         // An escalating watchdog alert ignores the gentle ramp. The point of
         // escalation is that the gentle approach already failed.
-        currentVolume = if (gentleRamp && !escalated) RAMP_START else targetVolume
+        currentVolume = if (alarm.gentleRamp && !escalated) min(RAMP_START, targetVolume) else targetVolume
 
-        player = try {
-            MediaPlayer().apply {
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ALARM)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build()
-                )
-                setDataSource(context, uri)
-                isLooping = true
-                setVolume(currentVolume, currentVolume)
-                prepare()
-                start()
+        val candidates = listOf(alarm.soundId, alarm.backupSoundId, SoundLibrary.DEFAULT_SOUND_ID, "system").distinct()
+        for (id in candidates) {
+            var candidate: MediaPlayer? = null
+            try {
+                val uri = resolveSound(id)
+                val created = MediaPlayer()
+                candidate = created
+                created.apply {
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ALARM)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build()
+                    )
+                    setDataSource(context, uri)
+                    isLooping = true
+                    setVolume(currentVolume, currentVolume)
+                    prepare()
+                    start()
+                    setOnErrorListener { _, what, extra ->
+                        Log.e(TAG, "Audio failed during playback: $what/$extra; using emergency tone")
+                        startEmergencyTone()
+                        true
+                    }
+                }
+                player = candidate
+                break
+            } catch (e: java.io.IOException) {
+                Log.e(TAG, "Could not play tone $id", e)
+                candidate?.release()
+            } catch (e: IllegalStateException) {
+                Log.e(TAG, "Player could not start tone $id", e)
+                candidate?.release()
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Could not play $uri", e)
-            null
         }
+        if (player == null) startEmergencyTone()
 
-        if (gentleRamp && !escalated) scheduleRamp()
-        if (vibrate) startVibration(escalated)
+        if (alarm.gentleRamp && !escalated) scheduleRamp()
+        if (alarm.vibrationEnabled) startVibration(escalated)
+        if (alarm.speakLabel || alarm.speakTime) startSpeech(alarm)
     }
 
     private fun scheduleRamp() {
-        val step = (targetVolume - RAMP_START) / RAMP_STEPS
+        val step = (targetVolume - currentVolume) / rampSteps
         val runnable = object : Runnable {
             override fun run() {
                 currentVolume = min(targetVolume, currentVolume + step)
@@ -160,6 +186,13 @@ class AlarmSoundPlayer(private val context: Context) {
     }
 
     fun stop() {
+        emergencyLoop?.let { handler.removeCallbacks(it) }
+        emergencyLoop = null
+        emergencyTone?.release()
+        emergencyTone = null
+        speech?.stop()
+        speech?.shutdown()
+        speech = null
         rampRunnable?.let { handler.removeCallbacks(it) }
         rampRunnable = null
 
@@ -179,22 +212,59 @@ class AlarmSoundPlayer(private val context: Context) {
     }
 
     private fun resolveSound(soundId: String): Uri {
-        val sound = SoundLibrary.soundFor(soundId)
-        val resId = context.resources.getIdentifier(
-            sound.resourceName, "raw", context.packageName
-        )
-        if (resId != 0) {
-            return Uri.parse("android.resource://${context.packageName}/$resId")
-        }
-        return RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+        if (soundId == "system") return RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
             ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
             ?: Settings.System.DEFAULT_ALARM_ALERT_URI
+        val sound = SoundLibrary.soundFor(soundId)
+        val tone = File(context.cacheDir, "${sound.id}-v1.wav")
+        if (!tone.exists() || tone.length() != 96_044L) {
+            tone.writeBytes(AlarmToneSynthesizer.wav(sound.id))
+        }
+        return Uri.fromFile(tone)
+    }
+
+    private fun startEmergencyTone() {
+        if (emergencyTone != null) return
+        Log.w(TAG, "Using synthesized alarm-stream emergency beeps")
+        emergencyTone = ToneGenerator(AudioManager.STREAM_ALARM, 90)
+        val loop = object : Runnable {
+            override fun run() {
+                emergencyTone?.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 800)
+                handler.postDelayed(this, 1_500)
+            }
+        }
+        emergencyLoop = loop
+        handler.post(loop)
+    }
+
+    private fun startSpeech(alarm: Alarm) {
+        speech = TextToSpeech(context) { status ->
+            val engine = speech ?: return@TextToSpeech
+            if (status != TextToSpeech.SUCCESS) {
+                Log.w(TAG, "Speech unavailable; alarm tone continues")
+                return@TextToSpeech
+            }
+            val voice = engine.voices?.firstOrNull {
+                !it.isNetworkConnectionRequired && it.locale.language == Locale.getDefault().language
+            }
+            if (voice == null) {
+                Log.w(TAG, "No offline voice installed; alarm tone continues")
+                return@TextToSpeech
+            }
+            engine.voice = voice
+            engine.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).build())
+            val now = java.time.LocalTime.now()
+            val text = listOfNotNull(
+                alarm.name.takeIf { alarm.speakLabel },
+                java.time.format.DateTimeFormatter.ofPattern("h:mm a").format(now).takeIf { alarm.speakTime }
+            ).joinToString(". ")
+            engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "alarm-label")
+        }
     }
 
     private companion object {
         const val TAG = "AlarmSoundPlayer"
         const val RAMP_START = 0.08f
-        const val RAMP_STEPS = 30
         const val RAMP_INTERVAL_MS = 1_000L
         val PATTERN_NORMAL = longArrayOf(0, 500, 800)
         val PATTERN_URGENT = longArrayOf(0, 400, 200, 400, 200, 400, 900)

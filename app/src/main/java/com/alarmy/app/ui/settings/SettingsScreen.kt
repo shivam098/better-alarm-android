@@ -136,8 +136,8 @@ fun SettingsScreen(viewModel: AlarmsViewModel) {
                     Text("Clear wake history", color = MaterialTheme.colorScheme.error)
                 }
                 Text(
-                    "Deletes every recorded alarm, along with your streak and " +
-                        "reliability figures. Your alarms themselves are kept.",
+                    "Deletes resolved wake history and statistics. Active snoozes " +
+                        "and wake checks are retained so their limits keep working. Your alarms are kept.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -164,8 +164,8 @@ fun SettingsScreen(viewModel: AlarmsViewModel) {
             title = { Text("Clear wake history?") },
             text = {
                 Text(
-                    "Your streak, reliability percentage and every recorded alarm " +
-                        "will be deleted. This cannot be undone."
+                    "Resolved history and statistics will be deleted. Active snoozes " +
+                        "and wake checks are retained. This cannot be undone."
                 )
             },
             confirmButton = {

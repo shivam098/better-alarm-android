@@ -62,6 +62,14 @@ class DeviceCapabilities(private val context: Context) {
         cameraGranted = cameraGranted
     )
 
+    fun configurableMissions(): List<MissionType> = MissionLibrary.available(
+        hasAccelerometer = hasAccelerometer,
+        hasStepCounter = hasStepCounter,
+        hasCamera = hasCamera,
+        activityRecognitionGranted = true,
+        cameraGranted = true
+    )
+
     /** Permissions the user has not granted, used to pick a fallback mission. */
     fun unavailablePermissions(): Set<MissionPermission> = buildSet {
         if (!cameraGranted || !hasCamera) add(MissionPermission.CAMERA)

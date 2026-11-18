@@ -59,7 +59,7 @@ Gradle version, so `core/build.gradle.kts` must stay Gradle-8 compatible.
 ## `core` — the part that is proven
 
 No Android types, no clock reads, no randomness that isn't seeded. Every decision
-is a function of its arguments, which is why 198 tests can cover it.
+is a function of its arguments, with focused JVM regression tests.
 
 ### `model/`
 `Alarm`, `MissionConfig`, `AlarmOccurrence`, `Weekday`. All `@Serializable`.
@@ -68,7 +68,7 @@ is a function of its arguments, which is why 198 tests can cover it.
 alarm*:
 
 ```
-<alarmId>-<yyyyMMdd>-<HHmm>[#watchdog-<n>]
+<alarmId>-<yyyyMMdd>-<HHmm>[#wd<n>|#snooze<n>|#check|#wake]
 ```
 
 Any reconciliation, timezone change, DST shift or reboot re-arm that produces the
@@ -181,9 +181,37 @@ JSON files, not Room. The domain objects are already `@Serializable`, the data
 set is small, and every read is a whole-collection read — Room would add KSP and
 a schema migration burden for no benefit.
 
-Writes are atomic (temp file, then rename) because an alarm clock is a program
+Writes use Android `AtomicFile` (sync/backup/recovery) because an alarm clock is a program
 that gets killed at arbitrary moments, and a half-written alarm list is a
 missed alarm.
+
+`AppGraph` uses device-protected storage and migrates legacy credential-protected
+JSON files on an unlocked launch. This allows direct-boot delivery without
+accessing encrypted-until-unlock files. Android backup includes alarms, history,
+targets, and preferences, but excludes pending delivery bookkeeping.
+
+`deliveries.json` persists each pending follow-up's alarm ID, exact key, due
+time, and watchdog index. `rescheduleAll()` retains these while rebuilding
+ordinary future alarms, so a process restart or permission recovery cannot
+erase a snooze. The occurrence is written at fire time and updated by stable
+occurrence key, including the snooze count. Consumed one-time alarms are excluded
+until edited/re-enabled.
+
+Mission-before-snooze is an explicit reducer state: completion of that mission
+records `SNOOZED`, not `COMPLETED`. The UI remounts the runner when entering this
+state so partially completed work cannot earn a fresh snooze.
+
+The opt-in post-dismissal wake check schedules two persisted deliveries:
+`#check` posts a confirmation notification, and `#wake` re-rings 60 seconds
+later if unconfirmed. Confirmation cancels the chain. Completing the re-alarm
+does not recursively arm another wake check. This differs from Mission Guard,
+which only protects an unfinished initial mission.
+
+Original PCM tones are synthesized by the core and played through the alarm
+stream. The Android layer handles backup/emergency audio, a configurable ramp,
+and optional offline text-to-speech. No microphone or Internet permission is
+needed. Android JVM tests exercise persisted schedule reconciliation; physical
+device testing remains essential.
 
 ### DI: `AppGraph`
 

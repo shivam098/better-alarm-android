@@ -32,16 +32,6 @@ class BootReceiver : BroadcastReceiver() {
 
         AppGraph.ensureInstalled(context)
 
-        // Anything we thought was pending died with the reboot or the upgrade.
-        // Clearing first prevents cancel() calls against PendingIntents that no
-        // longer exist, which would otherwise recreate them.
-        if (action == Intent.ACTION_BOOT_COMPLETED ||
-            action == Intent.ACTION_LOCKED_BOOT_COMPLETED ||
-            action == Intent.ACTION_MY_PACKAGE_REPLACED
-        ) {
-            AppGraph.repository.clearPending()
-        }
-
         val pending = goAsync()
         try {
             AppGraph.scheduler.rescheduleAll()
@@ -57,7 +47,8 @@ class BootReceiver : BroadcastReceiver() {
             Intent.ACTION_MY_PACKAGE_REPLACED,
             Intent.ACTION_TIME_CHANGED,
             Intent.ACTION_TIMEZONE_CHANGED,
-            Intent.ACTION_DATE_CHANGED
+            Intent.ACTION_DATE_CHANGED,
+            "android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED"
         )
     }
 }

@@ -30,7 +30,13 @@ class AlarmReceiver : BroadcastReceiver() {
         val watchdogIndex = intent.getIntExtra(EXTRA_WATCHDOG_INDEX, 0)
 
         // This alarm has now been consumed; it no longer exists in AlarmManager.
-        AppGraph.repository.forgetPending(listOf(key))
+        AppGraph.scheduler.cancel(key)
+        if (key.endsWith("#check")) {
+            if (AppGraph.repository.alarm(alarmId)?.wakeCheckEnabled == true) {
+                AlarmNotifications.showWakeCheck(context, key)
+            }
+            return
+        }
 
         val service = Intent(context, RingingService::class.java).apply {
             action = RingingService.ACTION_START

@@ -21,7 +21,7 @@ import java.util.UUID
  * inside of your home does not leave a picture of it on disk.
  */
 @Serializable
-private data class TargetBundle(
+data class TargetBundle(
     val photos: List<PhotoTarget> = emptyList(),
     val codes: List<CodeTarget> = emptyList()
 )

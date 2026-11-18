@@ -29,6 +29,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -53,8 +60,14 @@ fun AlarmListScreen(
     // Recomputed on every composition of this screen rather than cached: a
     // permission can be revoked while the app is in the background, and a stale
     // "all good" banner is worse than no banner.
-    val criticalFailures by produceState(initialValue = 0) {
-        value = AppGraph.reliability.criticalFailures
+    var criticalFailures by remember { mutableIntStateOf(AppGraph.reliability.criticalFailures) }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) criticalFailures = AppGraph.reliability.criticalFailures
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
     }
 
     Scaffold(

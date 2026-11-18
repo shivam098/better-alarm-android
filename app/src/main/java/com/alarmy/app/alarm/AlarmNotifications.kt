@@ -36,6 +36,7 @@ object AlarmNotifications {
 
     const val NOTIFICATION_RINGING = 1001
     const val NOTIFICATION_WARNING = 1002
+    const val NOTIFICATION_UPCOMING = 1003
 
     fun createChannels(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -152,6 +153,61 @@ object AlarmNotifications {
                 )
             )
             .build()
+
+    fun showWakeCheck(context: Context, key: String) {
+        val notification = NotificationCompat.Builder(context, CHANNEL_WARNINGS)
+            .setSmallIcon(R.drawable.ic_alarm_notification)
+            .setContentTitle("Still awake?")
+            .setContentText("Confirm within one minute or your alarm will ring again.")
+            .setOngoing(true)
+            .addAction(
+                R.drawable.ic_alarm_notification, "I'm awake",
+                actionIntent(context, AlarmActionReceiver.ACTION_AWAKE, key)
+            )
+            .build()
+        try {
+            context.getSystemService(NotificationManager::class.java)
+                .notify(wakeCheckId(key), notification)
+        } catch (e: SecurityException) {
+            android.util.Log.w("AlarmNotifications", "Wake-check notification denied; re-alarm remains armed", e)
+        }
+    }
+
+    fun cancelWakeCheck(context: Context, key: String) {
+        context.getSystemService(NotificationManager::class.java).cancel(wakeCheckId(key))
+    }
+
+    fun updateUpcoming(
+        context: Context, alarm: com.alarmy.core.model.Alarm?, due: Long?,
+        enabled: Boolean, use24Hour: Boolean
+    ) {
+        val manager = context.getSystemService(NotificationManager::class.java)
+        if (!enabled || alarm == null || due == null) {
+            manager.cancel(NOTIFICATION_UPCOMING)
+            return
+        }
+        createChannels(context)
+        val date = java.time.Instant.ofEpochMilli(due).atZone(java.time.ZoneId.systemDefault())
+        val format = java.time.format.DateTimeFormatter.ofPattern(if (use24Hour) "EEE HH:mm" else "EEE h:mm a")
+        val notification = NotificationCompat.Builder(context, CHANNEL_UPCOMING)
+            .setSmallIcon(R.drawable.ic_alarm_notification)
+            .setContentTitle("Next alarm: ${date.format(format)}")
+            .setContentText(alarm.name)
+            .setOngoing(true)
+            .setSilent(true)
+            .setContentIntent(PendingIntent.getActivity(context, NOTIFICATION_UPCOMING,
+                Intent(context, MainActivity::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+            .build()
+        try {
+            manager.notify(NOTIFICATION_UPCOMING, notification)
+        } catch (e: SecurityException) {
+            android.util.Log.w("AlarmNotifications", "Upcoming notification permission denied", e)
+        }
+    }
+
+    private fun wakeCheckId(key: String) =
+        com.alarmy.core.model.OccurrenceKey.requestCode("${key.substringBefore('#')}#check")
 
     private fun actionIntent(context: Context, action: String, key: String): PendingIntent =
         PendingIntent.getBroadcast(

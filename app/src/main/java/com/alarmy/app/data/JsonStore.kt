@@ -3,6 +3,8 @@ package com.alarmy.app.data
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.IOException
+import android.util.AtomicFile
+import android.util.Log
 
 /**
  * A tiny atomic JSON file store.
@@ -28,29 +30,31 @@ class JsonStore(private val directory: File) {
 
     fun <T> read(fileName: String, deserializer: kotlinx.serialization.DeserializationStrategy<T>, default: T): T {
         val file = File(directory, fileName)
-        if (!file.exists()) return default
+        if (!file.exists() && !File(directory, "$fileName.bak").exists()) return default
         return try {
-            json.decodeFromString(deserializer, file.readText())
+            val text = AtomicFile(file).openRead().bufferedReader().use { it.readText() }
+            json.decodeFromString(deserializer, text)
         } catch (e: Exception) {
             // A corrupt file must never brick the app. Move it aside so the
             // user can recover it manually and carry on with defaults.
-            runCatching { file.renameTo(File(directory, "$fileName.corrupt")) }
+            Log.e("JsonStore", "Cannot read $fileName; retaining corrupt data for recovery", e)
+            if (!file.renameTo(File(directory, "$fileName.corrupt"))) {
+                Log.e("JsonStore", "Could not preserve corrupt $fileName")
+            }
             default
         }
     }
 
     fun <T> write(fileName: String, serializer: kotlinx.serialization.SerializationStrategy<T>, value: T) {
-        val target = File(directory, fileName)
-        val temp = File(directory, "$fileName.tmp")
+        val target = AtomicFile(File(directory, fileName))
+        val bytes = json.encodeToString(serializer, value).toByteArray(Charsets.UTF_8)
+        val stream = target.startWrite()
         try {
-            temp.writeText(json.encodeToString(serializer, value))
-            if (!temp.renameTo(target)) {
-                // renameTo fails if the target exists on some filesystems.
-                target.delete()
-                if (!temp.renameTo(target)) throw IOException("Could not replace $fileName")
-            }
+            stream.write(bytes)
+            target.finishWrite(stream)
         } catch (e: Exception) {
-            temp.delete()
+            target.failWrite(stream)
+            Log.e("JsonStore", "Could not persist $fileName", e)
             throw e
         }
     }

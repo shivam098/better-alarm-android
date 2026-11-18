@@ -3,11 +3,21 @@
     <cloud-backup>
         <include domain="file" path="alarms.json" />
         <include domain="file" path="occurrences.json" />
-        <exclude domain="file" path="pending.json" />
+        <include domain="file" path="targets.json" />
+        <include domain="file" path="settings.json" />
+        <include domain="device_file" path="alarms.json" />
+        <include domain="device_file" path="occurrences.json" />
+        <include domain="device_file" path="targets.json" />
+        <include domain="device_file" path="settings.json" />
     </cloud-backup>
     <device-transfer>
         <include domain="file" path="alarms.json" />
         <include domain="file" path="occurrences.json" />
-        <exclude domain="file" path="pending.json" />
+        <include domain="file" path="targets.json" />
+        <include domain="file" path="settings.json" />
+        <include domain="device_file" path="alarms.json" />
+        <include domain="device_file" path="occurrences.json" />
+        <include domain="device_file" path="targets.json" />
+        <include domain="device_file" path="settings.json" />
     </device-transfer>
 </data-extraction-rules>

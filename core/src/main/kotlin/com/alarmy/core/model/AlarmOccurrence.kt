@@ -93,6 +93,8 @@ data class AlarmOccurrence(
     val attempts: Int = 0,
     val failureReasons: List<String> = emptyList(),
     val snoozeCount: Int = 0,
+    val snoozedUntilEpochMillis: Long? = null,
+    val wakeCheckAtEpochMillis: Long? = null,
     val timeToCompleteMs: Long? = null,
     val audioSuppression: AudioSuppressionReason = AudioSuppressionReason.NONE,
     val deliveryTier: DeliveryTier = DeliveryTier.EXACT_ALARM_CLOCK,

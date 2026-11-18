@@ -17,6 +17,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -134,6 +135,7 @@ fun MissionSection(
             }
         }
 
+        MissionSetup(config, onChange)
         if (config.type == MissionType.COMBINATION) {
             Spacer(Modifier.height(8.dp))
             CombinationEditor(config = config, available = available, onChange = onChange)
@@ -195,6 +197,37 @@ private fun CombinationEditor(
                             label = { Text(type.displayName) }
                         )
                     }
+            }
+            MissionSetup(child) { updated ->
+                val changed = children.toMutableList()
+                changed[index] = updated
+                onChange(config.copy(children = changed))
+            }
+            Row {
+                Text("Rounds / count: ${child.targetCount}")
+                androidx.compose.material3.TextButton(onClick = {
+                    val changed = children.toMutableList()
+                    changed[index] = child.copy(targetCount = child.targetCount - 1).normalized()
+                    onChange(config.copy(children = changed))
+                }) { Text("-") }
+                androidx.compose.material3.TextButton(onClick = {
+                    val changed = children.toMutableList()
+                    changed[index] = child.copy(targetCount = child.targetCount + 1).normalized()
+                    onChange(config.copy(children = changed))
+                }) { Text("+") }
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                MissionDifficulty.entries.forEach { difficulty ->
+                    FilterChip(
+                        selected = child.difficulty == difficulty,
+                        onClick = {
+                            val changed = children.toMutableList()
+                            changed[index] = child.copy(difficulty = difficulty)
+                            onChange(config.copy(children = changed))
+                        },
+                        label = { Text(difficulty.displayName) }
+                    )
+                }
             }
         }
     }

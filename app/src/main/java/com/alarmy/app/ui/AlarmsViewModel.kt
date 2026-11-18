@@ -14,6 +14,7 @@ import com.alarmy.core.state.WakeStatisticsCalculator
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import java.time.Instant
 
@@ -30,14 +31,13 @@ class AlarmsViewModel : ViewModel() {
 
     val settings: StateFlow<AppSettings> = settingsStore.settings
 
-    val rows: StateFlow<List<AlarmRow>> = repository.alarms
-        .map { alarms ->
+    val rows: StateFlow<List<AlarmRow>> = combine(repository.alarms, repository.occurrences) { alarms, _ ->
             val calculator = AlarmScheduleCalculator(AppGraph.timeSource.zone())
             val now = AppGraph.timeSource.now()
             alarms.map { alarm ->
                 AlarmRow(
                     alarm = alarm,
-                    nextFire = if (alarm.isEnabled) calculator.nextFireDate(alarm, now) else null
+                    nextFire = if (alarm.isEnabled && !repository.isConsumed(alarm)) calculator.nextFireDate(alarm, now) else null
                 )
             }
         }
@@ -58,7 +58,7 @@ class AlarmsViewModel : ViewModel() {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     fun availableMissions(): List<MissionType> =
-        DeviceCapabilities(AppGraph.appContext).availableMissions()
+        DeviceCapabilities(AppGraph.appContext).configurableMissions()
 
     fun alarm(id: String?): Alarm? = id?.let { repository.alarm(it) }
 

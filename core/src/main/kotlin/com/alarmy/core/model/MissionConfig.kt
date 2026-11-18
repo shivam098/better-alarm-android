@@ -48,7 +48,7 @@ enum class MissionType {
             NONE, MATH, MISSING_SYMBOL, MEMORY, TYPING, COMBINATION -> emptySet()
             SHAKE -> setOf(MissionPermission.MOTION)
             STEPS -> setOf(MissionPermission.ACTIVITY_RECOGNITION)
-            SQUAT -> setOf(MissionPermission.CAMERA, MissionPermission.MOTION)
+            SQUAT -> setOf(MissionPermission.MOTION)
             PHOTO, QR -> setOf(MissionPermission.CAMERA)
         }
 
@@ -156,7 +156,8 @@ data class MissionConfig(
     val difficulty: MissionDifficulty = MissionDifficulty.MEDIUM,
     val targetCount: Int = defaultTargetCount(MissionType.MATH),
     val referenceAssetIds: List<String> = emptyList(),
-    val children: List<MissionConfig> = emptyList()
+    val children: List<MissionConfig> = emptyList(),
+    val customPhrase: String = ""
 ) {
     val requiredPermissions: Set<MissionPermission>
         get() = if (type == MissionType.COMBINATION) {
@@ -184,7 +185,14 @@ data class MissionConfig(
         val range = targetRange(type)
         return copy(
             targetCount = targetCount.coerceIn(range),
-            children = if (type == MissionType.COMBINATION) children else emptyList()
+            children = if (type == MissionType.COMBINATION) {
+                List(targetCount.coerceIn(range)) { index ->
+                    children.getOrElse(index) { DEFAULT }.let {
+                        if (it.type == MissionType.COMBINATION) DEFAULT else it.normalized()
+                    }
+                }
+            } else emptyList(),
+            customPhrase = customPhrase.trim().take(240)
         )
     }
 

@@ -12,23 +12,21 @@ reason worth reading before you look at the code.
 
 ---
 
-## Read this first: what is verified and what is not
+## Download and verification
 
-I want to be exact about this, because "it builds" is a claim I cannot make.
+Installable APKs and their checksums are published in
+[GitHub Releases](https://github.com/shivam098/better-alarm-android/releases).
+Read the release's signing and device-testing notes before installing.
+A debug-signed APK is a development build, **not** a production-signed release.
+Its package is `com.alarmy.app.debug`, separate from `com.alarmy.app`. Android
+will only upgrade an existing installation signed by the same certificate;
+an incompatible development certificate requires uninstalling (which loses
+local data). Never uninstall without first considering your saved alarms.
 
-| Part | State |
-|---|---|
-| `core/` — all scheduling, state, mission and statistics logic | **Compiled and tested. 198 tests, 0 failures, run on the authoring machine.** |
-| `app/` — the Android layer (UI, alarms, services, receivers) | **Written, reviewed, never compiled.** There was no Android SDK available where this was written. |
-
-So: the part where the *thinking* lives is proven. The part where the *wiring*
-lives is not. Expect to fix some import and Compose API errors on your first
-build — most likely in the Compose UI files, which use a few Material 3 APIs
-whose exact signatures move between versions. The logic underneath them will
-not be the problem.
-
-Run `cd core && ./gradlew test` before anything else. If that is green, the
-brain of the app is intact and everything else is plumbing.
+The Android build workflow compiles the app, runs JVM/Robolectric regressions
+and lint, and verifies APK metadata/signature. Core tests remain independently
+runnable without an SDK. These checks do **not** prove overnight delivery,
+audibility, camera matching, or OEM battery behavior; those need a device.
 
 ---
 
@@ -69,8 +67,8 @@ cd better-alarm-android
 # 1. Prove the logic is sound. Needs only a JDK, no Android SDK.
 cd core && ./gradlew test && cd ..
 
-# 2. Build the app.
-./gradlew assembleDebug
+# 2. Build the app and check Android persistence regressions and lint.
+./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
 
 # 3. Install on a connected device.
 ./gradlew installDebug
@@ -89,7 +87,7 @@ Most likely causes, in order:
    casualties.
 2. **`Android SDK not found`.** Add a `local.properties` with
    `sdk.dir=/Users/you/Library/Android/sdk`. It is gitignored on purpose.
-3. **Gradle JDK is 21.** AGP 8.7 wants 17. Set it in Project Structure.
+3. **Java is missing or too old.** Use JDK 17 for the pinned build configuration.
 
 ---
 
@@ -101,10 +99,11 @@ Most likely causes, in order:
 cd core && ./gradlew test
 ```
 
-198 tests over the pure logic: schedule calculation across DST boundaries,
+Tests over the pure logic: schedule calculation across DST boundaries,
 the alarm state machine, snooze ladders, streak counting with grace days, the
 anti-cheat motion validators, and the photo hasher. These are the specification,
-written as assertions.
+written as assertions. Android JVM tests additionally recreate the repository,
+reconcile persisted snoozes/wake checks, and verify chain cancellation.
 
 There are **no instrumented tests**. Not an oversight — an Android test runner
 cannot meaningfully simulate "the phone was in a drawer for six hours and MIUI
@@ -137,7 +136,9 @@ While ringing, swipe the notification or hit "Clear all". Nothing should change.
 
 **6. Mission Guard actually guards**
 With a guarded alarm ringing, press Home mid-mission. The ringing screen should
-come straight back.
+leave the alarm audible, with a notification that returns you to the mission.
+Opening the camera or a permission dialog must not stop the alarm or repeatedly
+relaunch the mission screen.
 
 **7. Volume cannot silence it**
 While a guarded alarm rings, press volume-down to zero. The alarm volume should
@@ -225,7 +226,7 @@ register a blank wall.
 Full detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The short version:
 
 ```
-core/                        Pure Kotlin. No Android imports. 198 tests.
+core/                        Pure Kotlin. No Android imports.
   model/                     Alarm, MissionConfig, AlarmOccurrence, Weekday
   schedule/                  Next-fire calculation, watchdogs, DST, overlaps
   state/                     Alarm state machine, wake statistics
@@ -251,10 +252,37 @@ on a machine with no Android tooling, and it is what makes CI cheap.
 
 ## Things you should know
 
-**No alarm sounds ship with this repo.** Bundling audio means bundling someone's
-copyright. The app falls back to your device's default alarm ringtone. To add
-your own, drop `.ogg` files into `app/src/main/res/raw/` named after the entries
-in `SoundLibrary`.
+**All seven selectable tones are original synthesized sounds.** They are
+generated locally as PCM, without licensed recordings or downloads. The sound
+settings include a backup tone, a 5-120 second gentle ramp, and optional spoken
+label/current time using an installed offline voice. If a tone cannot play,
+the backup is tried; emergency alarm-stream beeps remain the final fallback.
+Speech never replaces the tone, and unavailable speech is logged.
+
+**Photo and QR missions must be registered before saving**, including each
+combination child. Only a photo fingerprint is stored, never the photo.
+Camera/activity permissions are requested during setup, with app-settings
+recovery for denied permissions. At ring time, unavailable permissions or
+missing targets substitute a real mission, not a dismiss shortcut. Mission
+preview uses the actual normalized chain and custom typing sentence.
+
+**Snooze limits survive re-firing and process restarts.** Shrinking is optional.
+When mission-before-snooze is enabled, requesting snooze starts a fresh mission;
+finishing it grants snooze rather than dismissing the alarm. Reconciliation
+retains pending snoozes and guards. Consumed one-time alarms are not re-armed
+for tomorrow unless edited or re-enabled.
+
+**Wake check is separate from Mission Guard and off by default.** After a
+completed mission, it posts a confirmation after the configured 1-30 minutes.
+If not confirmed within one minute, the alarm rings again and requires the
+mission again. Both events are persisted and restored after a restart/reboot.
+Denied notifications prevent confirmation, so the re-alarm still fires.
+Force-stop still defeats both mechanisms.
+
+**Not full Alarmy Premium parity.** Overnight recording/snore detection, AI
+or speech-recognition missions, habits, backgrounds, and sleep analysis remain
+separate product work. No microphone permission or recording is introduced,
+and no last-minute edit lock is imposed.
 
 **Guarded alarms fight volume changes.** If an alarm is marked guarded and you
 press volume-down while it is ringing, the app restores the alarm stream to 60%.
@@ -264,7 +292,10 @@ they asked for it in advance. Unguarded alarms never do this.
 
 **The app has no INTERNET permission.** Not "does not send data" — cannot. There
 is no account, no analytics, no network code. Everything is in
-`getFilesDir()` on your phone. `adb uninstall` removes all of it.
+device-protected app storage on your phone so alarms can be restored before
+the first unlock after a reboot. Existing JSON files migrate on an unlocked
+launch; targets and preferences are included in Android backup, while pending
+delivery bookkeeping is not. `adb uninstall` removes local data.
 
 **Force-stop defeats it.** Explained in Testing, step 8. Nothing can be done
 about this from inside an app.

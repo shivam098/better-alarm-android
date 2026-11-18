@@ -75,6 +75,7 @@ object RingingController {
     private var state = AlarmState()
     private var occurrence: AlarmOccurrence? = null
     private var missionStartedAt: Instant? = null
+    private var surfaceVisible = false
 
     val isRinging: Boolean get() = _snapshot.value != null
 
@@ -83,7 +84,15 @@ object RingingController {
     }
 
     fun detach(host: RingingHost) {
-        if (this.host === host) this.host = null
+        if (this.host === host) {
+            this.host = null
+            _snapshot.value = null
+            machine = null
+            occurrence = null
+            missionStartedAt = null
+            surfaceVisible = false
+            state = AlarmState()
+        }
     }
 
     /**
@@ -102,21 +111,47 @@ object RingingController {
         // A watchdog identifies its parent, so a chain entry can still find its
         // alarm after the app has been restarted.
         val rootKey = OccurrenceKey.rootOf(key)
+        if (_snapshot.value?.let { OccurrenceKey.rootOf(it.occurrenceKey) == rootKey } == true) {
+            scheduler.cancel(key)
+            return true
+        }
+        if (_snapshot.value != null) {
+            scheduler.defer(alarmId, key, scheduledAtMillis, watchdogIndex)
+            return true
+        }
         val alarm = repository.alarm(alarmId)
             ?: repository.occurrence(rootKey)?.let { repository.alarm(it.alarmId) }
             ?: run {
                 scheduler.cancelChain(key)
                 return false
             }
-
-        // Already finished this morning? A late watchdog must stay quiet.
-        val existing = repository.occurrence(rootKey)
-        if (existing?.outcome == AlarmOutcome.COMPLETED) {
+        if (!alarm.isEnabled) {
             scheduler.cancelChain(key)
             return false
         }
 
-        val decision = MissedWindowPolicy().decide(scheduledAt, now)
+        // Already finished this morning? A late watchdog must stay quiet.
+        val existing = repository.occurrence(rootKey)
+        if (existing?.outcome == AlarmOutcome.SNOOZED && key.contains("#wd")) {
+            scheduler.cancel(key)
+            return false
+        }
+        val wakeCheck = key.endsWith("#wake")
+        if (wakeCheck && existing?.wakeCheckAtEpochMillis == null) {
+            scheduler.cancelChain(key)
+            return false
+        }
+        if (wakeCheck) AlarmNotifications.cancelWakeCheck(AppGraph.appContext, key)
+        if (existing?.outcome == AlarmOutcome.COMPLETED && !wakeCheck) {
+            scheduler.cancelChain(key)
+            return false
+        }
+
+        val settings = AppGraph.settings.settings.value
+        val decision = if (now.epochSecond - scheduledAt.epochSecond >= 60) {
+            MissedWindowPolicy(settings.missedWindowRule, settings.missedWindowGraceMinutes)
+                .decide(scheduledAt, now)
+        } else MissedWindowDecision.NotYetDue
         if (decision is MissedWindowDecision.SkipAndRecordMissed) {
             repository.recordOccurrence(
                 buildOccurrence(alarm, rootKey, scheduledAt, now, alarm.mission, null)
@@ -128,36 +163,51 @@ object RingingController {
         }
 
         val capabilities = DeviceCapabilities(AppGraph.appContext)
-        val requested = if (watchdogIndex > 0) alarm.mission.escalated() else alarm.mission
-        val resolved = MissionLibrary.resolve(requested, capabilities.availableMissions())
-        val substituted = if (resolved.type != requested.type) requested.type else null
+        val requested = if (watchdogIndex >= 3 && alarm.missionGuard.escalates) {
+            alarm.mission.escalated()
+        } else alarm.mission
+        val resolved = MissionLibrary.resolve(
+            requested, capabilities.availableMissions(),
+            targetAvailable = { config ->
+                when (config.type) {
+                    MissionType.PHOTO -> config.referenceAssetIds.firstOrNull()?.let { AppGraph.targets.photo(it) } != null
+                    MissionType.QR -> config.referenceAssetIds.firstOrNull()?.let { AppGraph.targets.code(it) } != null
+                    else -> true
+                }
+            },
+            fallback = alarm.fallbackMission
+        )
+        val substituted = if (resolved != requested.normalized()) requested.type else null
 
         machine = AlarmStateMachine(
             snoozePolicy = SnoozePolicy(
                 baseMinutes = alarm.snooze.duration,
-                maxSnoozes = alarm.snooze.limit ?: Int.MAX_VALUE,
-                requiresMission = alarm.snooze.costsMission
+                maxSnoozes = if (!alarm.snooze.isEnabled || wakeCheck) 0 else alarm.snooze.limit ?: Int.MAX_VALUE,
+                requiresMission = alarm.snooze.costsMission,
+                escalating = alarm.snooze.escalating
             ),
             guarded = alarm.isGuarded,
             mission = resolved
         )
-        state = AlarmState()
+        state = AlarmState(snoozeCount = existing?.snoozeCount ?: 0)
         missionStartedAt = null
 
-        occurrence = buildOccurrence(alarm, rootKey, scheduledAt, now, resolved, substituted)
-            .copy(snoozeCount = existing?.snoozeCount ?: 0)
+        occurrence = existing?.copy(outcome = null, resolvedAtEpochMillis = null,
+            snoozedUntilEpochMillis = null, wakeCheckAtEpochMillis = null)
+            ?: buildOccurrence(alarm, rootKey, scheduledAt, now, resolved, substituted)
+        occurrence?.let { repository.recordOccurrence(it) }
 
         _snapshot.value = RingingSnapshot(
             alarm = alarm,
             occurrenceKey = key,
-            scheduledAt = scheduledAt,
+            scheduledAt = existing?.scheduledAt ?: scheduledAt,
             firedAt = now,
             mission = resolved,
             substitutedFrom = substituted,
             state = state,
-            disclosure = null,
-            snoozesRemaining = alarm.snooze.limit ?: Int.MAX_VALUE,
-            canSnooze = alarm.snooze.isEnabled
+            disclosure = if (wakeCheck) "Your wake check was not confirmed. Complete the mission again." else null,
+            snoozesRemaining = ((alarm.snooze.limit ?: Int.MAX_VALUE) - state.snoozeCount).coerceAtLeast(0),
+            canSnooze = alarm.snooze.isEnabled && !wakeCheck
         )
 
         dispatch(AlarmEvent.Fired(occurrenceKey = key, watchdogIndex = watchdogIndex))
@@ -167,24 +217,31 @@ object RingingController {
     fun missionStarted() = dispatch(AlarmEvent.MissionStarted)
     fun missionCompleted() = dispatch(AlarmEvent.MissionCompleted)
     fun missionFailed() = dispatch(AlarmEvent.MissionFailed)
-    fun snoozeRequested() = dispatch(AlarmEvent.SnoozeRequested)
+    fun snoozeRequested() {
+        if (_snapshot.value?.canSnooze == true) {
+            dispatch(AlarmEvent.SnoozeRequested)
+            if (state.snoozePendingMission && !surfaceVisible) host?.showSurface()
+        }
+    }
+    fun surfaceShown() { surfaceVisible = true }
     fun dismissedWithoutMission() = dispatch(AlarmEvent.DismissedWithoutMission)
+    fun timedOut() = dispatch(AlarmEvent.GuardWindowElapsed)
 
     /**
      * The ringing surface disappeared without the user resolving the alarm.
      *
      * On iOS this can only be handled by a chain scheduled in advance, because
      * a terminated app never learns it happened. Here the service is still
-     * alive, so the surface is brought straight back -- the watchdog chain
-     * remains as the backstop for the case where the whole process dies.
+     * alive, so audio continues and the notification returns to the mission.
+     * The watchdog chain remains the backstop if the whole process dies.
      */
     fun surfaceLost() {
+        surfaceVisible = false
         if (!isRinging) return
         if (state.phase == AlarmPhase.COMPLETED || state.phase == AlarmPhase.SNOOZED) return
-        dispatch(AlarmEvent.SurfaceLost)
-        if (_snapshot.value?.alarm?.isGuarded == true) {
-            host?.showSurface()
-        }
+        // Launching a camera or permission dialog also stops the activity.
+        // Losing that window is never consent to silence or finish a mission.
+        host?.refreshNotification("Alarm still ringing", "Return to finish your mission.", _snapshot.value?.canSnooze == true)
     }
 
     fun recordAttempt(failureReason: String?) {
@@ -219,8 +276,12 @@ object RingingController {
         _snapshot.value = _snapshot.value?.copy(
             state = state,
             disclosure = disclosure,
-            snoozesRemaining = snoozesRemaining()
+            snoozesRemaining = snoozesRemaining(),
+            canSnooze = _snapshot.value?.canSnooze == true && snoozesRemaining() > 0
         )
+        _snapshot.value?.let {
+            host?.refreshNotification(it.alarm.name, disclosure ?: "Complete the mission to stop the alarm.", it.canSnooze)
+        }
 
         if (state.phase == AlarmPhase.COMPLETED ||
             state.phase == AlarmPhase.SNOOZED ||
@@ -237,13 +298,18 @@ object RingingController {
         when (effect) {
             is AlarmEffect.StartRinging -> host?.startAudio(snapshot.alarm, effect.escalate)
             AlarmEffect.StopRinging -> host?.stopAudio()
-            is AlarmEffect.PresentMission -> host?.showSurface()
+            is AlarmEffect.PresentMission -> Unit
             AlarmEffect.DismissMission -> Unit
             AlarmEffect.ScheduleGuardChain ->
-                scheduler.scheduleGuardChain(snapshot.alarm, snapshot.scheduledAt, snapshot.occurrenceKey)
+                scheduler.scheduleGuardChain(snapshot.alarm, snapshot.scheduledAt, OccurrenceKey.rootOf(snapshot.occurrenceKey))
             AlarmEffect.CancelGuardChain -> scheduler.cancelChain(snapshot.occurrenceKey)
             is AlarmEffect.ScheduleSnooze -> {
-                occurrence = occurrence?.let { it.copy(snoozeCount = it.snoozeCount + 1) }
+                occurrence = occurrence?.copy(
+                    snoozeCount = state.snoozeCount,
+                    outcome = AlarmOutcome.SNOOZED,
+                    snoozedUntilEpochMillis = AppGraph.timeSource.now().plusSeconds(effect.minutes * 60L).toEpochMilli()
+                )
+                occurrence?.let { AppGraph.repository.recordOccurrence(it) }
                 scheduler.scheduleSnooze(
                     snapshot.alarm,
                     snapshot.occurrenceKey,
@@ -261,8 +327,15 @@ object RingingController {
     private fun recordOutcome(outcome: AlarmOutcome) {
         val now = AppGraph.timeSource.now()
         val started = missionStartedAt
+        val snapshot = _snapshot.value
+        val wakeDue = if (outcome == AlarmOutcome.COMPLETED &&
+            snapshot?.alarm?.wakeCheckEnabled == true && !snapshot.occurrenceKey.endsWith("#wake")) {
+            now.plusSeconds(snapshot.alarm.wakeCheckMinutes.coerceIn(1, 30) * 60L).toEpochMilli()
+        } else null
         occurrence = occurrence?.copy(
             outcome = outcome,
+            wakeCheckAtEpochMillis = wakeDue,
+            snoozedUntilEpochMillis = if (outcome == AlarmOutcome.SNOOZED) occurrence?.snoozedUntilEpochMillis else null,
             resolvedAtEpochMillis = now.toEpochMilli(),
             timeToCompleteMs = if (started != null && outcome == AlarmOutcome.COMPLETED) {
                 now.toEpochMilli() - started.toEpochMilli()
@@ -272,6 +345,13 @@ object RingingController {
             attempts = state.missionAttempts
         )
         occurrence?.let { AppGraph.repository.recordOccurrence(it) }
+        if (outcome == AlarmOutcome.COMPLETED && snapshot != null) {
+            AlarmNotifications.cancelWakeCheck(AppGraph.appContext, snapshot.occurrenceKey)
+            if (snapshot.alarm.wakeCheckEnabled && !snapshot.occurrenceKey.endsWith("#wake")) {
+                AppGraph.scheduler.scheduleWakeCheck(snapshot.alarm, OccurrenceKey.rootOf(snapshot.occurrenceKey),
+                    Instant.ofEpochMilli(requireNotNull(wakeDue)))
+            }
+        }
 
         // A repeating alarm needs its next instance armed now that this one is
         // consumed. rescheduleAll is idempotent, so this is safe to call on

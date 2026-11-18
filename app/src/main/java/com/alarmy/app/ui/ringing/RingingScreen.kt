@@ -74,9 +74,9 @@ fun RingingScreen(
                 fontWeight = FontWeight.Light,
                 color = MaterialTheme.colorScheme.onBackground
             )
-            if (snapshot.alarm.label.isNotBlank()) {
+            if (snapshot.alarm.name.isNotBlank()) {
                 Text(
-                    snapshot.alarm.label,
+                    snapshot.alarm.name,
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onBackground,
                     textAlign = TextAlign.Center
@@ -100,6 +100,7 @@ fun RingingScreen(
 
             Box(Modifier.height(32.dp))
 
+            androidx.compose.runtime.key(snapshot.state.snoozePendingMission) {
             MissionRunner(
                 config = snapshot.mission,
                 occurrenceKey = snapshot.occurrenceKey,
@@ -109,6 +110,7 @@ fun RingingScreen(
                 },
                 onComplete = onMissionComplete
             )
+            }
 
             Box(Modifier.height(24.dp))
 

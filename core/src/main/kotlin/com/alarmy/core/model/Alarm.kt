@@ -92,6 +92,13 @@ data class Alarm(
     val volume: Double = 1.0,
     val gentleRamp: Boolean = true,
     val vibrationEnabled: Boolean = true,
+    val rampSeconds: Int = 30,
+    val backupSoundId: String = "klaxon",
+    val speakLabel: Boolean = false,
+    val speakTime: Boolean = false,
+    /** Opt-in confirmation after dismissal; unrelated to Mission Guard. */
+    val wakeCheckEnabled: Boolean = false,
+    val wakeCheckMinutes: Int = 5,
 
     val snooze: SnoozeSettings = SnoozeSettings.DEFAULT,
     val mission: MissionConfig = MissionConfig.DEFAULT,
@@ -100,7 +107,8 @@ data class Alarm(
     val missionGuard: MissionGuardSettings = MissionGuardSettings.DEFAULT,
 
     val createdAtEpochMillis: Long = System.currentTimeMillis(),
-    val updatedAtEpochMillis: Long = System.currentTimeMillis()
+    val updatedAtEpochMillis: Long = System.currentTimeMillis(),
+    val lastFiredAtEpochMillis: Long? = null
 ) {
     val isRepeating: Boolean get() = repeatDays.isNotEmpty()
 
@@ -129,9 +137,7 @@ data class Alarm(
 /**
  * Built-in alarm sounds.
  *
- * [resourceName] is a raw-resource name (`res/raw/<name>.ogg`). If the resource
- * is missing the scheduler falls back to the system default alarm tone rather
- * than ringing silently, which is why this repo can ship without audio assets.
+ * Original synthesized tones, generated locally without licensed audio assets.
  */
 object SoundLibrary {
     data class Sound(

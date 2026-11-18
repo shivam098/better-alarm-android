@@ -45,6 +45,14 @@ import androidx.compose.ui.unit.dp
 import com.alarmy.app.ui.AlarmsViewModel
 import com.alarmy.app.ui.common.Format
 import com.alarmy.app.ui.mission.MissionSection
+import com.alarmy.app.ui.mission.MissionRunner
+import com.alarmy.app.AppGraph
+import com.alarmy.core.model.MissionConfig
+import com.alarmy.core.model.MissionType
+import androidx.compose.material3.Button
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalContext
+import com.alarmy.app.alarm.AlarmSoundPlayer
 import com.alarmy.core.model.Alarm
 import com.alarmy.core.model.MissionGuardSettings
 import com.alarmy.core.model.SnoozeSettings
@@ -62,6 +70,12 @@ fun AlarmEditorScreen(
     val existing = remember(alarmId) { viewModel.alarm(alarmId) }
     var draft by remember { mutableStateOf(existing ?: Alarm()) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var preview by remember { mutableStateOf(false) }
+    var previewResult by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val soundPreview = remember { AlarmSoundPlayer(context) }
+    DisposableEffect(Unit) { onDispose { soundPreview.stop() } }
+    val ready = targetsRegistered(draft.mission)
 
     val timeState = rememberTimePickerState(
         initialHour = draft.hour,
@@ -84,7 +98,7 @@ fun AlarmEditorScreen(
                             Icon(Icons.Filled.Delete, contentDescription = "Delete alarm")
                         }
                     }
-                    TextButton(onClick = {
+                    TextButton(enabled = ready, onClick = {
                         viewModel.save(
                             draft.copy(hour = timeState.hour, minute = timeState.minute)
                         )
@@ -158,12 +172,31 @@ fun AlarmEditorScreen(
                 available = viewModel.availableMissions(),
                 onChange = { draft = draft.copy(mission = it) }
             )
+            Text("Fallback when a sensor, permission, or target is unavailable")
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                listOf(MissionType.MATH, MissionType.TYPING, MissionType.MEMORY).forEach { type ->
+                    FilterChip(
+                        selected = draft.fallbackMission == type,
+                        onClick = { draft = draft.copy(fallbackMission = type) },
+                        label = { Text(type.displayName) }
+                    )
+                }
+            }
+            if (!ready) Text("Register the photo / QR targets for every mission in the chain before saving.")
+            Button(enabled = ready, onClick = { previewResult = null; preview = true }) { Text("Preview this mission chain") }
+            previewResult?.let { Text(it) }
 
             SectionCard("Sound") {
                 SoundDropdown(
                     selectedId = draft.soundId,
                     onSelect = { draft = draft.copy(soundId = it) }
                 )
+                Text("Backup tone (used if the selected tone cannot play)")
+                SoundDropdown(selectedId = draft.backupSoundId, onSelect = { draft = draft.copy(backupSoundId = it) })
+                Row {
+                    TextButton(onClick = { soundPreview.start(draft, false) }) { Text("Preview sound") }
+                    TextButton(onClick = { soundPreview.stop() }) { Text("Stop preview") }
+                }
                 Spacer(Modifier.height(8.dp))
                 Text("Volume", style = MaterialTheme.typography.labelLarge)
                 Slider(
@@ -173,10 +206,21 @@ fun AlarmEditorScreen(
                 )
                 ToggleRow(
                     label = "Gentle ramp",
-                    description = "Start quietly and build up over 30 seconds.",
+                    description = "Start quietly and build up over ${draft.rampSeconds} seconds.",
                     checked = draft.gentleRamp,
                     onChange = { draft = draft.copy(gentleRamp = it) }
                 )
+                if (draft.gentleRamp) {
+                    Text("Ramp duration: ${draft.rampSeconds} seconds")
+                    Slider(
+                        value = draft.rampSeconds.toFloat(),
+                        onValueChange = { draft = draft.copy(rampSeconds = it.toInt()) },
+                        valueRange = 5f..120f
+                    )
+                }
+                ToggleRow("Speak label", draft.speakLabel, { draft = draft.copy(speakLabel = it) },
+                    "Uses an installed offline voice; the alarm tone always continues.")
+                ToggleRow("Speak current time", draft.speakTime, { draft = draft.copy(speakTime = it) })
                 ToggleRow(
                     label = "Vibrate",
                     checked = draft.vibrationEnabled,
@@ -191,6 +235,10 @@ fun AlarmEditorScreen(
                     onChange = { draft = draft.copy(snooze = draft.snooze.copy(isEnabled = it)) }
                 )
                 if (draft.snooze.isEnabled) {
+                    ToggleRow(
+                        "Complete mission before snoozing", draft.snooze.costsMission,
+                        { draft = draft.copy(snooze = draft.snooze.copy(costsMission = it)) }
+                    )
                     Text("Duration: ${draft.snooze.duration} min", style = MaterialTheme.typography.bodyMedium)
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         SnoozeSettings.ALLOWED_DURATIONS.forEach { minutes ->
@@ -234,9 +282,39 @@ fun AlarmEditorScreen(
                 settings = draft.missionGuard,
                 onChange = { draft = draft.copy(missionGuard = it) }
             )
+            SectionCard("After dismissal") {
+                ToggleRow(
+                    "Wake check", draft.wakeCheckEnabled,
+                    { draft = draft.copy(wakeCheckEnabled = it) },
+                    "After you finish, confirm a notification within one minute or the alarm rings again. Survives app restarts, not force-stop."
+                )
+                if (draft.wakeCheckEnabled) {
+                    Text("Check after ${draft.wakeCheckMinutes} minutes")
+                    Slider(value = draft.wakeCheckMinutes.toFloat(),
+                        onValueChange = { draft = draft.copy(wakeCheckMinutes = it.toInt()) },
+                        valueRange = 1f..30f)
+                }
+            }
 
             Spacer(Modifier.height(48.dp))
         }
+    }
+
+    if (preview) {
+        AlertDialog(
+            onDismissRequest = { preview = false },
+            title = { Text("Mission preview - no alarm is scheduled") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    MissionRunner(
+                        config = draft.mission.normalized(), occurrenceKey = "preview-${draft.id}",
+                        onFailure = { previewResult = it.userMessage },
+                        onComplete = { previewResult = "Mission chain completed."; preview = false }
+                    )
+                }
+            },
+            confirmButton = { TextButton(onClick = { preview = false }) { Text("Close preview") } }
+        )
     }
 
     if (confirmDelete) {
@@ -256,6 +334,13 @@ fun AlarmEditorScreen(
             }
         )
     }
+}
+
+private fun targetsRegistered(config: MissionConfig): Boolean = when (config.type) {
+    MissionType.COMBINATION -> config.normalized().children.all(::targetsRegistered)
+    MissionType.PHOTO -> config.referenceAssetIds.firstOrNull()?.let { AppGraph.targets.photo(it) } != null
+    MissionType.QR -> config.referenceAssetIds.firstOrNull()?.let { AppGraph.targets.code(it) } != null
+    else -> true
 }
 
 /**

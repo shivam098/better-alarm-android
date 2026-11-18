@@ -60,6 +60,7 @@ class RingingService : Service(), RingingHost {
         // service five seconds to call startForeground, and losing that race
         // means an ANR instead of an alarm.
         promoteToForeground(placeholderNotification())
+        val alreadyRinging = RingingController.isRinging
 
         val started = RingingController.begin(
             alarmId = intent.getStringExtra(AlarmReceiver.EXTRA_ALARM_ID).orEmpty(),
@@ -75,21 +76,21 @@ class RingingService : Service(), RingingHost {
             return START_NOT_STICKY
         }
 
-        showSurface()
-        armSafetyTimeout()
+        if (!alreadyRinging) {
+            showSurface()
+            armSafetyTimeout()
+        } else {
+            RingingController.snapshot.value?.let {
+                refreshNotification(it.alarm.name, "Complete the mission to stop the alarm.", it.canSnooze)
+            }
+        }
         return START_REDELIVER_INTENT
     }
 
     // ------------------------------------------------------------ RingingHost
 
     override fun startAudio(alarm: Alarm, escalate: Boolean) {
-        player.start(
-            soundId = alarm.soundId,
-            volume = alarm.volume,
-            gentleRamp = alarm.gentleRamp,
-            vibrate = alarm.vibrationEnabled,
-            escalated = escalate
-        )
+        player.start(alarm, escalated = escalate)
         if (alarm.isGuarded) player.startWatching()
         refreshNotification(
             title = alarm.name,
@@ -188,11 +189,9 @@ class RingingService : Service(), RingingHost {
         } else {
             0
         }
-        runCatching {
-            ServiceCompat.startForeground(
-                this, AlarmNotifications.NOTIFICATION_RINGING, notification, type
-            )
-        }
+        ServiceCompat.startForeground(
+            this, AlarmNotifications.NOTIFICATION_RINGING, notification, type
+        )
     }
 
     private fun placeholderNotification() = AlarmNotifications.ringingNotification(
@@ -213,7 +212,7 @@ class RingingService : Service(), RingingHost {
     private fun armSafetyTimeout() {
         cancelSafetyTimeout()
         val runnable = Runnable {
-            RingingController.dismissedWithoutMission()
+            RingingController.timedOut()
             finish()
         }
         timeout = runnable

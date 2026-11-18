@@ -2,10 +2,15 @@
 <full-backup-content>
     <include domain="file" path="alarms.json" />
     <include domain="file" path="occurrences.json" />
+    <include domain="file" path="targets.json" />
+    <include domain="file" path="settings.json" />
+    <include domain="device_file" path="alarms.json" />
+    <include domain="device_file" path="occurrences.json" />
+    <include domain="device_file" path="targets.json" />
+    <include domain="device_file" path="settings.json" />
     <!--
         Deliberately NOT backed up: the pending-alarm bookkeeping. Restoring it
         onto another device would describe AlarmManager registrations that do
         not exist there. It is rebuilt from alarms.json on first launch anyway.
     -->
-    <exclude domain="file" path="pending.json" />
 </full-backup-content>

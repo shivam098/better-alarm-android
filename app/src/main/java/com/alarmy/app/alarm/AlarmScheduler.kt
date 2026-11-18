@@ -8,6 +8,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import com.alarmy.app.data.AlarmRepository
+import com.alarmy.app.data.AppSettings
 import com.alarmy.app.ui.MainActivity
 import com.alarmy.core.model.Alarm
 import com.alarmy.core.model.DeliveryTier
@@ -15,6 +16,7 @@ import com.alarmy.core.model.OccurrenceKey
 import com.alarmy.core.schedule.AlarmScheduleCalculator
 import com.alarmy.core.schedule.SchedulingBudget
 import com.alarmy.core.schedule.WatchdogPlanner
+import com.alarmy.core.schedule.PendingDelivery
 import com.alarmy.core.support.SystemTimeSource
 import com.alarmy.core.support.TimeSource
 import java.time.Instant
@@ -53,7 +55,8 @@ import java.time.Instant
 class AlarmScheduler(
     private val context: Context,
     private val repository: AlarmRepository,
-    private val timeSource: TimeSource = SystemTimeSource()
+    private val timeSource: TimeSource = SystemTimeSource(),
+    private val settingsProvider: () -> AppSettings = { AppSettings() }
 ) {
 
     private val alarmManager: AlarmManager =
@@ -69,7 +72,6 @@ class AlarmScheduler(
 
     fun currentTier(): DeliveryTier = when {
         canScheduleExact() -> DeliveryTier.EXACT_ALARM_CLOCK
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.M -> DeliveryTier.EXACT_WHILE_IDLE
         else -> DeliveryTier.INEXACT
     }
 
@@ -91,14 +93,46 @@ class AlarmScheduler(
      * edit path exercise identical code.
      */
     fun rescheduleAll() {
+        val now = timeSource.now()
+        val settings = settingsProvider()
+        val recovery = com.alarmy.core.schedule.MissedWindowPolicy(
+            settings.missedWindowRule, settings.missedWindowGraceMinutes
+        )
+        fun shouldRecover(due: Instant): Boolean = now.epochSecond - due.epochSecond < 60 ||
+            recovery.decide(due, now) !is com.alarmy.core.schedule.MissedWindowDecision.SkipAndRecordMissed
+        val retained = repository.deliveries().filter { delivery ->
+            val alarm = repository.alarm(delivery.alarmId)
+            val occurrence = repository.occurrence(OccurrenceKey.rootOf(delivery.key))
+            val due = Instant.ofEpochMilli(delivery.fireAtMillis)
+            val recover = shouldRecover(due)
+            if (alarm != null && alarm.isEnabled && '#' !in delivery.key &&
+                !due.isAfter(now) && occurrence == null && !recover) {
+                repository.recordOccurrence(com.alarmy.core.model.AlarmOccurrence(
+                    alarmId = alarm.id, occurrenceKey = delivery.key,
+                    scheduledAtEpochMillis = delivery.fireAtMillis,
+                    resolvedAtEpochMillis = now.toEpochMilli(),
+                    missionType = alarm.mission.type, difficulty = alarm.mission.difficulty,
+                    outcome = com.alarmy.core.model.AlarmOutcome.MISSED
+                ))
+            }
+            val valid = when {
+                occurrence == null -> true
+                delivery.key.endsWith("#check") || delivery.key.endsWith("#wake") ->
+                    occurrence.wakeCheckAtEpochMillis != null
+                else -> occurrence.outcome != com.alarmy.core.model.AlarmOutcome.COMPLETED
+            }
+            alarm?.isEnabled == true &&
+                ('#' in delivery.key || (!due.isAfter(now) && occurrence == null)) &&
+                valid && recover
+        }
         cancelAllKnown()
 
-        val now = timeSource.now()
         val calculator = AlarmScheduleCalculator(timeSource.zone())
         val requests = mutableListOf<SchedulingBudget.Request>()
         val detail = mutableMapOf<String, Pair<Alarm, Instant>>()
 
         for (alarm in repository.alarms.value.filter { it.isEnabled }) {
+            if (repository.isConsumed(alarm)) continue
             // Two occurrences per alarm, not one: if the device is asleep when
             // the first fires and the app is killed before it can schedule the
             // next, the second still stands.
@@ -122,6 +156,36 @@ class AlarmScheduler(
             scheduled += request.key
         }
         repository.rememberPending(scheduled)
+        retained.forEach {
+            scheduleExact(it.alarmId, it.key, Instant.ofEpochMilli(it.fireAtMillis), it.watchdogIndex, it.scheduledAtMillis)
+        }
+        for (occurrence in repository.occurrences.value) {
+            val alarm = repository.alarm(occurrence.alarmId)?.takeIf { it.isEnabled } ?: continue
+            if (occurrence.outcome == null ||
+                occurrence.outcome == com.alarmy.core.model.AlarmOutcome.DISMISSED_UNVERIFIED) {
+                scheduleGuardChain(alarm, occurrence.scheduledAt, occurrence.occurrenceKey)
+            }
+            occurrence.snoozedUntilEpochMillis?.let { due ->
+                val key = OccurrenceKey.snooze(occurrence.occurrenceKey, occurrence.snoozeCount)
+                if (shouldRecover(Instant.ofEpochMilli(due)) && key !in repository.pending()) {
+                    scheduleExact(alarm.id, key, Instant.ofEpochMilli(due), 0)
+                }
+            }
+            occurrence.wakeCheckAtEpochMillis?.let { due ->
+                if (shouldRecover(Instant.ofEpochMilli(due + 60_000))) {
+                    val root = occurrence.occurrenceKey
+                    if ("$root#wake" !in repository.pending()) {
+                        scheduleWakeCheck(alarm, root, Instant.ofEpochMilli(due))
+                    }
+                }
+            }
+        }
+        val upcoming = repository.deliveries()
+            .filter { it.fireAtMillis > now.toEpochMilli() && !it.key.endsWith("#check") }
+            .minByOrNull { it.fireAtMillis }
+        AlarmNotifications.updateUpcoming(context,
+            upcoming?.let { repository.alarm(it.alarmId) }, upcoming?.fireAtMillis,
+            settings.showNextAlarmNotification, settings.use24HourClock)
     }
 
     /**
@@ -145,6 +209,7 @@ class AlarmScheduler(
         if (plan.isEmpty) return
         val keys = mutableListOf<String>()
         for (entry in plan.entries) {
+            if (!entry.fireDate.isAfter(timeSource.now())) continue
             scheduleExact(alarm.id, entry.key, entry.fireDate, watchdogIndex = entry.index)
             keys += entry.key
         }
@@ -158,12 +223,30 @@ class AlarmScheduler(
         repository.rememberPending(listOf(key))
     }
 
+    fun scheduleWakeCheck(
+        alarm: Alarm, rootKey: String,
+        due: Instant = timeSource.now().plusSeconds(alarm.wakeCheckMinutes.coerceIn(1, 30) * 60L)
+    ) {
+        scheduleExact(alarm.id, "$rootKey#check", due, 0)
+        scheduleExact(alarm.id, "$rootKey#wake", due.plusSeconds(60), 0)
+    }
+
+    fun defer(alarmId: String, key: String, scheduledAtMillis: Long, watchdogIndex: Int) {
+        val deferredKey = if ('#' in key) key else "$key#deferred"
+        scheduleExact(alarmId, deferredKey,
+            timeSource.now().plusSeconds(60), watchdogIndex, scheduledAtMillis)
+    }
+
     // -------------------------------------------------------------- scheduling
 
     @SuppressLint("MissingPermission")
-    private fun scheduleExact(alarmId: String, key: String, fireDate: Instant, watchdogIndex: Int) {
+    private fun scheduleExact(
+        alarmId: String, key: String, fireDate: Instant, watchdogIndex: Int,
+        scheduledAtMillis: Long = fireDate.toEpochMilli()
+    ) {
+        repository.rememberDelivery(PendingDelivery(alarmId, key, fireDate.toEpochMilli(), watchdogIndex, scheduledAtMillis))
         val triggerAt = fireDate.toEpochMilli()
-        val operation = broadcastIntent(alarmId, key, triggerAt, watchdogIndex)
+        val operation = broadcastIntent(alarmId, key, scheduledAtMillis, watchdogIndex)
 
         try {
             if (canScheduleExact()) {
@@ -180,6 +263,7 @@ class AlarmScheduler(
         } catch (e: SecurityException) {
             // The permission was revoked between the check and the call.
             // Degrade rather than crash -- a late alarm beats no alarm.
+            android.util.Log.w("AlarmScheduler", "Exact permission changed; scheduling inexactly", e)
             alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, operation)
         }
     }
@@ -187,7 +271,7 @@ class AlarmScheduler(
     // ---------------------------------------------------------------- cancelling
 
     fun cancel(key: String) {
-        alarmManager.cancel(broadcastIntent(alarmId = "", key = key, triggerAt = 0, watchdogIndex = 0))
+        cancelOperation(key)
         repository.forgetPending(listOf(key))
     }
 
@@ -203,7 +287,7 @@ class AlarmScheduler(
         val root = OccurrenceKey.rootOf(anyKeyInChain)
         val doomed = repository.pending().filter { OccurrenceKey.rootOf(it) == root }
         for (key in doomed) {
-            alarmManager.cancel(broadcastIntent("", key, 0, 0))
+            cancelOperation(key)
         }
         repository.forgetPending(doomed)
     }
@@ -211,9 +295,22 @@ class AlarmScheduler(
     fun cancelAllKnown() {
         val keys = repository.pending()
         for (key in keys) {
-            alarmManager.cancel(broadcastIntent("", key, 0, 0))
+            cancelOperation(key)
         }
         repository.clearPending()
+    }
+
+    private fun cancelOperation(key: String) {
+        alarmManager.cancel(broadcastIntent("", key, 0, 0))
+        // Cancel registrations made by builds that did not URI-encode '#'.
+        val legacy = Intent(context, AlarmReceiver::class.java)
+            .setAction(AlarmReceiver.ACTION_FIRE)
+            .setData(Uri.parse("betteralarm://occurrence/$key"))
+        PendingIntent.getBroadcast(context, OccurrenceKey.requestCode(key), legacy,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)?.let {
+            alarmManager.cancel(it)
+            it.cancel()
+        }
     }
 
     // ------------------------------------------------------------------ intents
@@ -236,7 +333,7 @@ class AlarmScheduler(
     ): PendingIntent {
         val intent = Intent(context, AlarmReceiver::class.java).apply {
             action = AlarmReceiver.ACTION_FIRE
-            data = Uri.parse("betteralarm://occurrence/$key")
+            data = Uri.Builder().scheme("betteralarm").authority("occurrence").appendPath(key).build()
             putExtra(AlarmReceiver.EXTRA_KEY, key)
             putExtra(AlarmReceiver.EXTRA_ALARM_ID, alarmId)
             putExtra(AlarmReceiver.EXTRA_SCHEDULED_AT, triggerAt)

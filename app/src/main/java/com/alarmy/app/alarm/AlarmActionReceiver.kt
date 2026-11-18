@@ -17,11 +17,27 @@ class AlarmActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         AppGraph.ensureInstalled(context)
         when (intent.action) {
-            ACTION_SNOOZE -> RingingController.snoozeRequested()
+            ACTION_SNOOZE -> {
+                if (intent.getStringExtra(AlarmReceiver.EXTRA_KEY) ==
+                    RingingController.snapshot.value?.occurrenceKey) RingingController.snoozeRequested()
+            }
+            ACTION_AWAKE -> {
+                val key = intent.getStringExtra(AlarmReceiver.EXTRA_KEY) ?: return
+                val occurrence = AppGraph.repository.occurrence(com.alarmy.core.model.OccurrenceKey.rootOf(key)) ?: return
+                val due = occurrence.wakeCheckAtEpochMillis ?: return
+                if (AppGraph.timeSource.now().toEpochMilli() > due + 60_000) {
+                    android.util.Log.i("AlarmActionReceiver", "Wake confirmation arrived after its deadline; re-alarm remains armed")
+                    return
+                }
+                AppGraph.repository.recordOccurrence(occurrence.copy(wakeCheckAtEpochMillis = null))
+                AppGraph.scheduler.cancelChain(key)
+                AlarmNotifications.cancelWakeCheck(context, key)
+            }
         }
     }
 
     companion object {
         const val ACTION_SNOOZE = "com.alarmy.app.action.SNOOZE"
+        const val ACTION_AWAKE = "com.alarmy.app.action.AWAKE"
     }
 }

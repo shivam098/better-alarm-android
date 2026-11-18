@@ -34,6 +34,10 @@ import com.alarmy.app.ui.theme.BetterAlarmTheme
  * outlives this activity. The activity is only a window onto the session.
  */
 class RingingActivity : ComponentActivity() {
+    override fun onStart() {
+        super.onStart()
+        RingingController.surfaceShown()
+    }
 
     /** True once the mission is completed, snoozed, or given up on. */
     private var resolved = false
@@ -80,7 +84,6 @@ class RingingActivity : ComponentActivity() {
                         snapshot = current,
                         is24Hour = settings.use24HourClock,
                         onMissionComplete = {
-                            resolved = true
                             RingingController.missionCompleted()
                         },
                         onMissionFailed = { reason ->
@@ -88,7 +91,6 @@ class RingingActivity : ComponentActivity() {
                             RingingController.missionFailed()
                         },
                         onSnooze = {
-                            resolved = true
                             RingingController.snoozeRequested()
                         }
                     )
@@ -102,7 +104,7 @@ class RingingActivity : ComponentActivity() {
         // Leaving the screen with the mission unfinished is exactly the evasion
         // Mission Guard exists to catch. The controller decides what to do --
         // for an unguarded alarm, nothing.
-        if (!resolved && !isFinishing) {
+        if (!resolved) {
             RingingController.surfaceLost()
         }
     }

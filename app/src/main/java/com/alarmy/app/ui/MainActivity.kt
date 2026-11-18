@@ -37,6 +37,10 @@ import com.alarmy.app.ui.settings.SettingsScreen
 import com.alarmy.app.ui.theme.BetterAlarmTheme
 
 class MainActivity : ComponentActivity() {
+    override fun onResume() {
+        super.onResume()
+        com.alarmy.app.AppGraph.scheduler.rescheduleAll()
+    }
 
     private val notificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -44,6 +48,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        com.alarmy.app.AppGraph.ensureInstalled(this)
 
         // POST_NOTIFICATIONS is not a nicety here: the ringing screen is
         // launched by a notification's full-screen intent, so without it the

@@ -2,8 +2,7 @@ name: Core tests
 
 # Only the core module is built here. It is a standalone Gradle build with no
 # Android plugin, so this needs a JDK and nothing else -- no SDK download, no
-# licence acceptance, no emulator. The app module cannot be built without the
-# Android SDK and is deliberately not attempted.
+# licence acceptance, no emulator. android-build.yml separately builds the app.
 on:
   push:
     branches: [ main ]

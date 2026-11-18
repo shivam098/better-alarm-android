@@ -60,6 +60,9 @@ import com.alarmy.core.mission.MissionFailureReason
 import com.alarmy.core.mission.MotionOutcome
 import com.alarmy.core.mission.PhotoChallenge
 import com.alarmy.core.mission.TypingPhraseProvider
+import com.alarmy.core.mission.TypingChallenge
+import androidx.compose.runtime.key
+import androidx.compose.runtime.saveable.rememberSaveable
 import com.alarmy.core.model.MissionConfig
 import com.alarmy.core.model.MissionType
 import com.alarmy.core.support.SeededRandom
@@ -82,8 +85,8 @@ fun MissionRunner(
     onComplete: () -> Unit
 ) {
     if (config.type == MissionType.COMBINATION) {
-        var step by remember(occurrenceKey) { mutableIntStateOf(0) }
-        val children = config.children.ifEmpty { listOf(MissionConfig()) }
+        var step by rememberSaveable(occurrenceKey) { mutableIntStateOf(0) }
+        val children = config.normalized().children
 
         Column(Modifier.fillMaxWidth()) {
             Text(
@@ -92,6 +95,7 @@ fun MissionRunner(
                 color = MaterialTheme.colorScheme.primary
             )
             Spacer(Modifier.height(8.dp))
+            key(occurrenceKey, step) {
             SingleMission(
                 config = children[step],
                 // Salting by step keeps each link in the chain independent;
@@ -103,6 +107,7 @@ fun MissionRunner(
                     if (step + 1 >= children.size) onComplete() else step++
                 }
             )
+            }
         }
     } else {
         SingleMission(config, occurrenceKey, onFailure, onComplete)
@@ -116,10 +121,15 @@ private fun SingleMission(
     onFailure: (MissionFailureReason) -> Unit,
     onComplete: () -> Unit
 ) {
+    if (config.type !in com.alarmy.app.sensor.DeviceCapabilities(LocalContext.current).availableMissions()) {
+        Text("${config.type.displayName} is unavailable. Complete math instead.")
+        SingleMission(MissionConfig.DEFAULT, "$seed-fallback", onFailure, onComplete)
+        return
+    }
     // Motion missions track their own totals inside the validator, so they run
     // as a single round rather than N.
     val rounds = if (config.type.isPhysical || config.type == MissionType.NONE) 1 else config.targetCount
-    var round by remember(seed) { mutableIntStateOf(0) }
+    var round by rememberSaveable(seed) { mutableIntStateOf(0) }
 
     val advance: () -> Unit = {
         if (round + 1 >= rounds) onComplete() else round++
@@ -142,6 +152,7 @@ private fun SingleMission(
 
         val random = remember(seed, round) { SeededRandom.forOccurrence(seed, round.toLong()) }
 
+        key(seed, round) {
         when (config.type) {
             MissionType.NONE -> SlideToStop(onComplete)
             MissionType.MATH -> MathMission(random, config, onFailure, advance)
@@ -154,6 +165,7 @@ private fun SingleMission(
             MissionType.PHOTO -> PhotoMission(config, onFailure, advance)
             MissionType.QR -> CodeMission(config, onFailure, advance)
             MissionType.COMBINATION -> MathMission(random, config, onFailure, advance)
+        }
         }
     }
 }
@@ -350,7 +362,10 @@ private fun TypingMission(
     onFailure: (MissionFailureReason) -> Unit,
     onSolved: () -> Unit
 ) {
-    val challenge = remember(random) { TypingPhraseProvider().generate(random, config.difficulty) }
+    val challenge = remember(random, config.customPhrase) {
+        if (config.customPhrase.isNotBlank()) TypingChallenge(config.customPhrase.trim(), true)
+        else TypingPhraseProvider().generate(random, config.difficulty)
+    }
     var input by remember(challenge) { mutableStateOf("") }
     var error by remember(challenge) { mutableStateOf<String?>(null) }
 
@@ -485,9 +500,10 @@ private fun PhotoMission(
     val targetId = config.referenceAssetIds.firstOrNull()
     val target = remember(targetId) { targetId?.let { AppGraph.targets.photo(it) } }
     var message by remember { mutableStateOf<String?>(null) }
+    var unavailable by remember { mutableStateOf(false) }
 
-    if (target == null) {
-        MissingTarget("photo", onDone)
+    if (target == null || unavailable) {
+        MissingTarget("photo", onFailure, onDone)
         return
     }
 
@@ -515,7 +531,17 @@ private fun PhotoMission(
             modifier = Modifier.fillMaxWidth()
         )
         Spacer(Modifier.height(24.dp))
-        Button(onClick = { launcher.launch(null) }, modifier = Modifier.fillMaxWidth()) {
+        Button(onClick = {
+            try {
+                launcher.launch(null)
+            } catch (e: android.content.ActivityNotFoundException) {
+                android.util.Log.w("MissionRunner", "No camera application; using math", e)
+                unavailable = true
+            } catch (e: SecurityException) {
+                android.util.Log.w("MissionRunner", "Camera permission changed; using math", e)
+                unavailable = true
+            }
+        }, modifier = Modifier.fillMaxWidth()) {
             Text("Open camera")
         }
         message?.let {
@@ -534,9 +560,10 @@ private fun CodeMission(
     val targetId = config.referenceAssetIds.firstOrNull()
     val target = remember(targetId) { targetId?.let { AppGraph.targets.code(it) } }
     var message by remember { mutableStateOf<String?>(null) }
+    var unavailable by remember { mutableStateOf(false) }
 
-    if (target == null) {
-        MissingTarget("code", onDone)
+    if (target == null || unavailable) {
+        MissingTarget("code", onFailure, onDone)
         return
     }
 
@@ -560,7 +587,17 @@ private fun CodeMission(
 
     MissionFrame(prompt = challenge.prompt) {
         Button(
-            onClick = { launcher.launch(scanOptions()) },
+            onClick = {
+                try {
+                    launcher.launch(scanOptions())
+                } catch (e: android.content.ActivityNotFoundException) {
+                    android.util.Log.w("MissionRunner", "Scanner unavailable; using math", e)
+                    unavailable = true
+                } catch (e: SecurityException) {
+                    android.util.Log.w("MissionRunner", "Camera permission changed; using math", e)
+                    unavailable = true
+                }
+            },
             modifier = Modifier.fillMaxWidth()
         ) { Text("Scan code") }
         message?.let {
@@ -583,15 +620,17 @@ private fun scanOptions() = com.journeyapps.barcodescanner.ScanOptions().apply {
  * through rather than trapping the user.
  */
 @Composable
-private fun MissingTarget(kind: String, onDone: () -> Unit) {
+private fun MissingTarget(kind: String, onFailure: (MissionFailureReason) -> Unit, onDone: () -> Unit) {
     MissionFrame(prompt = "This mission is not set up") {
         Text(
             "The $kind you registered for this alarm is no longer available, so the " +
-                "mission cannot be checked. You can stop the alarm and set it up again later.",
+                "mission cannot be checked. Complete this math mission instead.",
             textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(24.dp))
-        Button(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text("Stop alarm") }
+        SingleMission(
+            MissionConfig.DEFAULT, "missing-$kind", onFailure, onDone
+        )
     }
 }
 

@@ -2,6 +2,8 @@ package com.alarmy.app.data
 
 import com.alarmy.core.model.Alarm
 import com.alarmy.core.model.AlarmOccurrence
+import com.alarmy.core.model.AlarmOutcome
+import com.alarmy.core.schedule.PendingDelivery
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -43,6 +45,9 @@ class AlarmRepository(directory: File) {
      */
     private var pendingKeys: MutableSet<String> =
         store.read(FILE_PENDING, SetSerializer(String.serializer()), emptySet()).toMutableSet()
+    private var deliveries = store.read(
+        "deliveries.json", ListSerializer(PendingDelivery.serializer()), emptyList()
+    )
 
     fun alarm(id: String): Alarm? = _alarms.value.firstOrNull { it.id == id }
 
@@ -68,7 +73,7 @@ class AlarmRepository(directory: File) {
 
     fun recordOccurrence(occurrence: AlarmOccurrence) {
         val list = _occurrences.value.toMutableList()
-        val index = list.indexOfFirst { it.id == occurrence.id }
+        val index = list.indexOfFirst { it.occurrenceKey == occurrence.occurrenceKey }
         if (index >= 0) list[index] = occurrence else list.add(occurrence)
         // Keep history bounded. Statistics only look back far enough for the
         // streak calculation, so an unbounded log would grow forever for nothing.
@@ -77,14 +82,42 @@ class AlarmRepository(directory: File) {
             .take(MAX_HISTORY)
         _occurrences.value = trimmed
         store.write(FILE_OCCURRENCES, ListSerializer(AlarmOccurrence.serializer()), trimmed)
+        val alarm = alarm(occurrence.alarmId)
+        if (alarm != null && !alarm.isRepeating &&
+            (alarm.lastFiredAtEpochMillis ?: Long.MIN_VALUE) < occurrence.scheduledAtEpochMillis) {
+            val alarms = _alarms.value.map {
+                if (it.id == alarm.id) it.copy(lastFiredAtEpochMillis = occurrence.scheduledAtEpochMillis) else it
+            }
+            store.write(FILE_ALARMS, ListSerializer(Alarm.serializer()), alarms)
+            _alarms.value = alarms
+        }
     }
 
     fun occurrence(key: String): AlarmOccurrence? =
         _occurrences.value.firstOrNull { it.occurrenceKey == key }
 
+    fun isConsumed(alarm: Alarm): Boolean = !alarm.isRepeating &&
+        ((alarm.lastFiredAtEpochMillis ?: Long.MIN_VALUE) >= alarm.updatedAtEpochMillis ||
+        _occurrences.value.any {
+            it.alarmId == alarm.id && it.scheduledAtEpochMillis >= alarm.updatedAtEpochMillis
+        })
+
+    @Synchronized
+    fun deliveries(): List<PendingDelivery> = deliveries.toList()
+
+    @Synchronized
+    fun rememberDelivery(delivery: PendingDelivery) {
+        deliveries = deliveries.filterNot { it.key == delivery.key } + delivery
+        store.write("deliveries.json", ListSerializer(PendingDelivery.serializer()), deliveries)
+        rememberPending(listOf(delivery.key))
+    }
+
     fun clearHistory() {
-        _occurrences.value = emptyList()
-        store.write(FILE_OCCURRENCES, ListSerializer(AlarmOccurrence.serializer()), emptyList())
+        val retained = _occurrences.value.filter {
+            it.outcome == null || it.outcome == AlarmOutcome.SNOOZED || it.wakeCheckAtEpochMillis != null
+        }
+        store.write(FILE_OCCURRENCES, ListSerializer(AlarmOccurrence.serializer()), retained)
+        _occurrences.value = retained
     }
 
     @Synchronized
@@ -96,6 +129,8 @@ class AlarmRepository(directory: File) {
     @Synchronized
     fun forgetPending(keys: Collection<String>) {
         pendingKeys.removeAll(keys.toSet())
+        deliveries = deliveries.filterNot { it.key in keys }
+        store.write("deliveries.json", ListSerializer(PendingDelivery.serializer()), deliveries)
         persistPending()
     }
 
@@ -105,6 +140,8 @@ class AlarmRepository(directory: File) {
     @Synchronized
     fun clearPending() {
         pendingKeys = mutableSetOf()
+        deliveries = emptyList()
+        store.write("deliveries.json", ListSerializer(PendingDelivery.serializer()), deliveries)
         persistPending()
     }
 

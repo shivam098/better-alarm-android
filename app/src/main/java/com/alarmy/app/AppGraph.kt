@@ -1,6 +1,8 @@
 package com.alarmy.app
 
 import android.content.Context
+import android.os.UserManager
+import java.io.File
 import com.alarmy.app.alarm.AlarmScheduler
 import com.alarmy.app.data.AlarmRepository
 import com.alarmy.app.data.AppSettingsStore
@@ -44,16 +46,33 @@ object AppGraph {
     val timeSource: TimeSource = SystemTimeSource()
 
     private var installed = false
+    private var storageUnlocked = false
 
     @Synchronized
     fun install(context: Context) {
-        if (installed) return
+        val unlocked = context.getSystemService(UserManager::class.java).isUserUnlocked
+        if (installed && appContext === context.applicationContext && (storageUnlocked || !unlocked)) return
         appContext = context.applicationContext
-        repository = AlarmRepository(appContext.filesDir)
-        scheduler = AlarmScheduler(appContext, repository, timeSource)
-        settings = AppSettingsStore(appContext.filesDir)
-        targets = MissionTargetStore(appContext.filesDir)
+        val storage = appContext.createDeviceProtectedStorageContext()
+        if (unlocked) {
+            listOf("alarms.json", "occurrences.json", "pending.json", "deliveries.json", "settings.json", "targets.json").forEach { name ->
+                val old = File(appContext.filesDir, name)
+                val target = File(storage.filesDir, name)
+                if (old.exists() && !target.exists()) {
+                    val temp = File(storage.filesDir, "$name.migrate")
+                    old.copyTo(temp, overwrite = true)
+                    check(temp.renameTo(target)) { "Could not migrate $name to direct-boot storage" }
+                    check(old.delete()) { "Could not remove migrated $name" }
+                }
+            }
+        }
+        repository = AlarmRepository(storage.filesDir)
+        scheduler = AlarmScheduler(appContext, repository, timeSource,
+            settingsProvider = { AppGraph.settings.settings.value })
+        settings = AppSettingsStore(storage.filesDir)
+        targets = MissionTargetStore(storage.filesDir)
         reliability = ReliabilityChecker(appContext, scheduler)
+        storageUnlocked = unlocked
         installed = true
     }
 
@@ -65,6 +84,6 @@ object AppGraph {
      * nothing when the graph is already installed.
      */
     fun ensureInstalled(context: Context) {
-        if (!installed) install(context)
+        install(context)
     }
 }

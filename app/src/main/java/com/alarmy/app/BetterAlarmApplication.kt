@@ -17,6 +17,11 @@ class BetterAlarmApplication : Application() {
         // registration *and* prevents the app receiving any broadcast until it
         // is next launched manually. Rebuilding here means opening the app is
         // always enough to repair the schedule.
-        runCatching { AppGraph.scheduler.rescheduleAll() }
+        try {
+            AppGraph.scheduler.rescheduleAll()
+        } catch (e: RuntimeException) {
+            android.util.Log.e("BetterAlarm", "Could not restore alarm schedule", e)
+            AppGraph.reliability.notifyIfBroken()
+        }
     }
 }

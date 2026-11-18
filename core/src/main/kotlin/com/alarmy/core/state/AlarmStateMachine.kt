@@ -17,11 +17,13 @@ class SnoozePolicy(
     val baseMinutes: Int = 9,
     val maxSnoozes: Int = 3,
     /** When true, snoozing requires completing the mission again. */
-    val requiresMission: Boolean = false
+    val requiresMission: Boolean = false,
+    val escalating: Boolean = true
 ) {
 
     /** Duration for the snooze about to be taken, given how many came before. */
     fun durationMinutes(previousSnoozes: Int): Int {
+        if (!escalating) return max(1, baseMinutes)
         val ladder = listOf(
             baseMinutes,
             (baseMinutes * 5.0 / 9.0).roundToInt(),
@@ -60,7 +62,8 @@ data class AlarmState(
     val missionFailures: Int = 0,
     /** Chain position, 0 for the original alarm. */
     val watchdogIndex: Int = 0,
-    val outcome: AlarmOutcome? = null
+    val outcome: AlarmOutcome? = null,
+    val snoozePendingMission: Boolean = false
 )
 
 /**
@@ -173,6 +176,9 @@ class AlarmStateMachine(
     )
 
     private fun onMissionCompleted(state: AlarmState): Transition {
+        if (state.phase != AlarmPhase.MISSION_IN_PROGRESS &&
+            state.phase != AlarmPhase.RINGING) return Transition(state, emptyList())
+        if (state.snoozePendingMission) return grantSnooze(state)
         val outcome = AlarmOutcome.COMPLETED
         return Transition(
             state.copy(phase = AlarmPhase.COMPLETED, outcome = outcome),
@@ -196,6 +202,8 @@ class AlarmStateMachine(
     )
 
     private fun onSnoozeRequested(state: AlarmState): Transition {
+        if (state.phase != AlarmPhase.RINGING &&
+            state.phase != AlarmPhase.MISSION_IN_PROGRESS) return Transition(state, emptyList())
         if (!snoozePolicy.isAllowed(state.snoozeCount)) {
             return Transition(
                 state,
@@ -207,13 +215,30 @@ class AlarmStateMachine(
             )
         }
 
+        if (snoozePolicy.requiresMission) {
+            return Transition(
+                state.copy(snoozePendingMission = true),
+                listOf(AlarmEffect.Disclose("Complete this mission to earn your snooze."))
+            )
+        }
+        return grantSnooze(state)
+    }
+
+    private fun grantSnooze(state: AlarmState): Transition {
         val minutes = snoozePolicy.durationMinutes(state.snoozeCount)
         return Transition(
-            state.copy(phase = AlarmPhase.SNOOZED, snoozeCount = state.snoozeCount + 1),
+            state.copy(
+                phase = AlarmPhase.SNOOZED,
+                snoozeCount = state.snoozeCount + 1,
+                snoozePendingMission = false,
+                outcome = AlarmOutcome.SNOOZED
+            ),
             listOf(
                 AlarmEffect.StopRinging,
                 AlarmEffect.DismissMission,
+                AlarmEffect.CancelGuardChain,
                 AlarmEffect.ScheduleSnooze(minutes),
+                AlarmEffect.RecordOutcome(AlarmOutcome.SNOOZED),
                 AlarmEffect.Disclose(
                     "Snoozed for $minutes minute${if (minutes == 1) "" else "s"}. " +
                         "${snoozePolicy.remaining(state.snoozeCount + 1)} left."
