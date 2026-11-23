@@ -122,8 +122,8 @@ object MissionLibrary {
             type = MissionType.STEPS,
             summary = "Walk a set number of steps.",
             howItWorks =
-                "Get out of bed and walk. Steps are counted with a cadence check, so " +
-                    "shaking the phone in bed does not count."
+                "Get out of bed and walk with the phone. Dedicated step sensors are preferred; " +
+                    "foreground motion counting is used when needed. Keep the mission screen open."
         ),
         MissionDescriptor(
             type = MissionType.SQUAT,

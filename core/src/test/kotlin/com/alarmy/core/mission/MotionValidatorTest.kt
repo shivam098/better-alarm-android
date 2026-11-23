@@ -125,14 +125,14 @@ class StepValidatorTest {
     }
 
     @Test
-    fun `a perfectly regular cadence is rejected as mechanical`() {
-        val validator = StepValidator(target = 100)
+    fun `regular or quantized walking reaches the target without resetting`() {
+        val validator = StepValidator(target = 30)
 
         var outcome: MotionOutcome = MotionOutcome.Ignored
-        repeat(11) { index -> outcome = validator.register(index * 0.5) }
+        repeat(30) { index -> outcome = validator.register(index * 0.5) }
 
-        assertTrue(outcome is MotionOutcome.Rejected)
-        assertEquals(0, validator.count)
+        assertTrue(outcome is MotionOutcome.Completed)
+        assertEquals(30, validator.count)
     }
 
     @Test

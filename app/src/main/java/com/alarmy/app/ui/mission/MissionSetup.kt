@@ -32,7 +32,9 @@ fun MissionSetup(config: MissionConfig, onChange: (MissionConfig) -> Unit) {
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         permissionRevision++
         message = if (granted) "Permission granted. You can now register or run this mission."
-        else "Permission denied. Grant it in app settings or this alarm will use a fallback mission."
+        else if (config.type == MissionType.STEPS) {
+            "Permission denied. Walking will wait for permission; grant Physical activity in app settings."
+        } else "Permission denied. Grant it in app settings or this alarm will use a fallback mission."
     }
     val capabilities = remember(permissionRevision) { DeviceCapabilities(context) }
     config.type.requiredPermissions.forEach { permission ->

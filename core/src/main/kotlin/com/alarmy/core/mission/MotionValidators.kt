@@ -64,25 +64,15 @@ class ShakeCounter(
 /**
  * Counts steps, rejecting cadences a walking human cannot produce.
  *
- * Two filters, aimed at two different cheats:
- *
- *  * **Cadence bounds.** Human walking sits between roughly 0.5 and 3.5 steps
- *    per second. Anything faster is someone jiggling the phone in bed; the
- *    bounds are deliberately generous at the slow end so a genuinely slow or
- *    unsteady walker is never called a cheat.
- *  * **Periodicity.** As with shaking, a machine's regularity gives it away.
- *    The threshold here is lower than the shake counter's, because walking
- *    genuinely *is* more rhythmic than shaking, and a false accusation is worse
- *    than a missed one.
+ * Rejects events faster than a plausible walking cadence. Regular walking is
+ * valid: hardware timestamps can be quantized, so periodicity is not evidence
+ * of cheating. Pauses do not erase completed steps.
  */
 class StepValidator(
     private val target: Int = 30,
     private val minStepIntervalSeconds: Double = 0.28,
-    private val maxStepIntervalSeconds: Double = 2.0,
-    private val minIntervalsForAnalysis: Int = 10,
-    private val periodicityThreshold: Double = 0.04
+    private val maxStepIntervalSeconds: Double = 2.0
 ) {
-    private val intervals = mutableListOf<Double>()
     private var lastTimestamp: Double? = null
 
     var count: Int = 0
@@ -90,39 +80,27 @@ class StepValidator(
 
     fun register(timestampSeconds: Double): MotionOutcome {
         val previous = lastTimestamp
-        lastTimestamp = timestampSeconds
-
+        if (!timestampSeconds.isFinite()) return MotionOutcome.Ignored
         if (previous == null) {
+            lastTimestamp = timestampSeconds
             count += 1
             return outcome()
         }
 
         val delta = timestampSeconds - previous
         if (delta <= 0) return MotionOutcome.Ignored
+        lastTimestamp = timestampSeconds
 
         // Too fast to be walking — almost certainly shaking.
         if (delta < minStepIntervalSeconds) {
             count = 0
-            intervals.clear()
             return MotionOutcome.Rejected(MissionFailureReason.IMPLAUSIBLE_MOTION)
         }
 
         // A long pause is fine; it just starts a fresh cadence run.
         if (delta > maxStepIntervalSeconds) {
-            intervals.clear()
             count += 1
             return outcome()
-        }
-
-        intervals += delta
-
-        if (intervals.size >= minIntervalsForAnalysis) {
-            val recent = intervals.takeLast(minIntervalsForAnalysis)
-            if (MotionStatistics.coefficientOfVariation(recent) < periodicityThreshold) {
-                count = 0
-                intervals.clear()
-                return MotionOutcome.Rejected(MissionFailureReason.IMPLAUSIBLE_MOTION)
-            }
         }
 
         count += 1
@@ -135,7 +113,6 @@ class StepValidator(
 
     fun reset() {
         count = 0
-        intervals.clear()
         lastTimestamp = null
     }
 }

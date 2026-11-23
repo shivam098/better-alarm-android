@@ -8,7 +8,6 @@ import android.hardware.SensorManager
 import com.alarmy.core.mission.MotionOutcome
 import com.alarmy.core.mission.ShakeCounter
 import com.alarmy.core.mission.SquatRepCounter
-import com.alarmy.core.mission.StepValidator
 import kotlin.math.abs
 import kotlin.math.acos
 import kotlin.math.sqrt
@@ -33,7 +32,6 @@ class MotionSensorSource(context: Context) : SensorEventListener {
         context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
 
     private var shakeCounter: ShakeCounter? = null
-    private var stepValidator: StepValidator? = null
     private var squatCounter: SquatRepCounter? = null
 
     private var onOutcome: ((MotionOutcome) -> Unit)? = null
@@ -50,15 +48,6 @@ class MotionSensorSource(context: Context) : SensorEventListener {
         listen(Sensor.TYPE_ACCELEROMETER, SensorManager.SENSOR_DELAY_GAME)
     }
 
-    fun startSteps(target: Int, onOutcome: (MotionOutcome) -> Unit) {
-        stopAll()
-        stepValidator = StepValidator(target = target)
-        this.onOutcome = onOutcome
-        // The hardware step detector emits one event per step and costs almost
-        // no battery, unlike deriving steps from raw acceleration.
-        listen(Sensor.TYPE_STEP_DETECTOR, SensorManager.SENSOR_DELAY_NORMAL)
-    }
-
     fun startSquats(target: Int, onOutcome: (MotionOutcome) -> Unit) {
         stopAll()
         squatCounter = SquatRepCounter(target = target)
@@ -72,7 +61,6 @@ class MotionSensorSource(context: Context) : SensorEventListener {
             registered = false
         }
         shakeCounter = null
-        stepValidator = null
         squatCounter = null
         onOutcome = null
         lastShakeSeconds = 0.0
@@ -88,9 +76,6 @@ class MotionSensorSource(context: Context) : SensorEventListener {
     override fun onSensorChanged(event: SensorEvent) {
         val seconds = event.timestamp / 1_000_000_000.0
         when (event.sensor.type) {
-            Sensor.TYPE_STEP_DETECTOR ->
-                stepValidator?.register(seconds)?.let { onOutcome?.invoke(it) }
-
             Sensor.TYPE_ACCELEROMETER -> {
                 shakeCounter?.let { handleShake(event, seconds, it) }
                 squatCounter?.let { handleSquat(event, seconds, it) }

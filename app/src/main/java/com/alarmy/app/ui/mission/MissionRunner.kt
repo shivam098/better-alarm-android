@@ -121,7 +121,8 @@ private fun SingleMission(
     onFailure: (MissionFailureReason) -> Unit,
     onComplete: () -> Unit
 ) {
-    if (config.type !in com.alarmy.app.sensor.DeviceCapabilities(LocalContext.current).availableMissions()) {
+    if (config.type != MissionType.STEPS &&
+        config.type !in com.alarmy.app.sensor.DeviceCapabilities(LocalContext.current).availableMissions()) {
         Text("${config.type.displayName} is unavailable. Complete math instead.")
         SingleMission(MissionConfig.DEFAULT, "$seed-fallback", onFailure, onComplete)
         return
@@ -159,8 +160,8 @@ private fun SingleMission(
             MissionType.MISSING_SYMBOL -> MissingSymbolMission(random, config, onFailure, advance)
             MissionType.MEMORY -> MemoryMission(random, config, onFailure, advance)
             MissionType.TYPING -> TypingMission(random, config, onFailure, advance)
+            MissionType.STEPS -> WalkingMission(config, onFailure, advance)
             MissionType.SHAKE,
-            MissionType.STEPS,
             MissionType.SQUAT -> MotionMission(config, onFailure, advance)
             MissionType.PHOTO -> PhotoMission(config, onFailure, advance)
             MissionType.QR -> CodeMission(config, onFailure, advance)
@@ -448,7 +449,6 @@ private fun MotionMission(
         }
         when (config.type) {
             MissionType.SHAKE -> source.startShake(config.targetCount, handle)
-            MissionType.STEPS -> source.startSteps(config.targetCount, handle)
             MissionType.SQUAT -> source.startSquats(config.targetCount, handle)
             else -> Unit
         }

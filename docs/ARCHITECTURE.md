@@ -115,7 +115,16 @@ Challenge generators, all seeded. `MotionValidators` holds the anti-cheat:
 
 - `ShakeCounter` rejects motion whose interval coefficient of variation is below
   0.08 and **resets the count** when it does. Human shaking sits around 0.25.
-- `StepValidator` uses a tighter 0.04, because walking is more regular.
+- `StepValidator` rejects intervals below 0.28 seconds, not regular walking.
+  `WalkingCounter` keeps mission-local progress across sequential sources and
+  validates cumulative batches against elapsed sensor time. `WalkingPeakDetector`
+  extracts foreground acceleration peaks (1.2 m/s² rise, 0.2 reset threshold,
+  0.5-second warm-up); it is an approximation requiring phone testing.
+  Android's `WalkingSensorSource` checks registration and switches detector ->
+  counter -> accelerometer after eight seconds without counted steps. Only one
+  source is registered; stale callbacks are discarded. Permission denial is
+  shown in the Walking UI, not resolved into another mission. Pause unregisters
+  sensors; resume preserves progress with a fresh cumulative baseline.
 - `SquatRepCounter` requires a real range of motion and rejects sub-second
   bounces.
 

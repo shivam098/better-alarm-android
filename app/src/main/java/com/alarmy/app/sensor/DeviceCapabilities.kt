@@ -26,16 +26,10 @@ class DeviceCapabilities(private val context: Context) {
     val hasAccelerometer: Boolean
         get() = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) != null
 
-    /**
-     * A hardware step counter, not the accelerometer.
-     *
-     * Deriving steps from raw acceleration is possible but drains the battery
-     * and is easy to fool by waving the phone; the dedicated sensor is
-     * low-power and is what `StepValidator`'s cadence thresholds were tuned
-     * against.
-     */
+    /** Walking can use either dedicated sensor or a foreground accelerometer. */
     val hasStepCounter: Boolean
-        get() = sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR) != null
+        get() = sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR) != null ||
+            sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_COUNTER) != null || hasAccelerometer
 
     val hasCamera: Boolean
         get() = context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)

@@ -194,7 +194,7 @@ harder to fake than to do.
 | Memory | Repeat a flashed grid pattern | Wrong tap restarts the whole sequence |
 | Typing | Retype a phrase exactly | Autocorrect disabled at the IME level |
 | Shake | Shake the phone N times | Rejects mechanically regular motion |
-| Steps | Get up and walk | Same, on step intervals |
+| Steps | Get up and walk | Plausible cadence; mission-local sensor deltas |
 | Squats | Actual squats, phone in hand | Partial dips and fast bounces do not count |
 | Photo | Photograph a place you registered | Perceptual hash, so it must be *that* place |
 | QR | Scan a code you placed somewhere | Payload must match the registered one |
@@ -204,9 +204,20 @@ harder to fake than to do.
 **The anti-cheat detail worth explaining.** Shaking a phone by hand produces
 intervals with a coefficient of variation around 0.25. Taping it to a fan, or
 letting a shake-bot do it, produces near-zero variance. The validator rejects
-anything below 0.08 — and, importantly, *resets the count* when it does. Same
-idea on steps, with a tighter threshold because walking is more regular than
-shaking.
+anything below 0.08 — and, importantly, *resets the count* when it does. That
+check is not used for steps: normal walking and quantized sensor timestamps
+can be very regular. Walking rejects implausibly fast events instead.
+
+Walking tries the step detector, then the cumulative step counter (counting
+only changes after the mission's first reading), then foreground accelerometer
+peaks. A failed registration or eight seconds without counted steps advances
+to the next source, without adding steps twice or erasing progress. The screen
+shows which source is active. Motion counting is an approximation, not verified
+hardware pedometry; keep the phone in a trouser pocket and the mission visible.
+Physical activity permission is required; denying it does not silently change
+Walking into Math. If no steps arrive, use **Retry sensors** (explicitly restarts
+the count) or **App settings** to recover permission. Counting pauses while the
+mission is not foreground; returning establishes a fresh counter baseline.
 
 **How the photo mission works.** When you set the alarm you photograph a place —
 the bathroom sink, the kettle. Only a 64-bit *difference hash* is stored, never

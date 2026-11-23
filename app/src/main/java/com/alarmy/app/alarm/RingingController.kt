@@ -167,7 +167,9 @@ object RingingController {
             alarm.mission.escalated()
         } else alarm.mission
         val resolved = MissionLibrary.resolve(
-            requested, capabilities.availableMissions(),
+            // Walking handles permission/sensor recovery in its own UI. Do not
+            // replace the user's walking goal with a different mission.
+            requested, capabilities.availableMissions() + MissionType.STEPS,
             targetAvailable = { config ->
                 when (config.type) {
                     MissionType.PHOTO -> config.referenceAssetIds.firstOrNull()?.let { AppGraph.targets.photo(it) } != null
